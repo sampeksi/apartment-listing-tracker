@@ -33,8 +33,8 @@ ROOM_COUNT_LABELS = {
 
 COLUMNS = [
     "FriendlyId", "Address", "District", "Price", "PreviousPrice", "Rooms",
-    "RoomStructure", "AreaM2", "Floor", "YearBuilt", "Agency", "Published",
-    "PublishedOrUpdated", "Link", "FirstSeen",
+    "RoomStructure", "AreaM2", "Floor", "YearBuilt", "Published",
+    "PublishedOrUpdated", "Link", "FirstSeen", "Status", "RemovedDate",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -103,14 +103,13 @@ def matches_districts(listing: dict, districts: list) -> bool:
     return any(d.lower() in addr2.lower() for d in districts)
 
 
-def ms_to_iso(ms):
+def ms_to_date_str(ms):
     if ms is None:
         return None
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%d.%m.%Y")
 
 
 def listing_to_row(listing: dict, first_seen: str) -> dict:
-    office = listing.get("office") or {}
     room_count = listing.get("roomCount")
     return {
         "FriendlyId": listing.get("friendlyId"),
@@ -123,11 +122,12 @@ def listing_to_row(listing: dict, first_seen: str) -> dict:
         "AreaM2": listing.get("totalArea") or listing.get("area"),
         "Floor": listing.get("floorLevel"),
         "YearBuilt": listing.get("constructionFinishedYear"),
-        "Agency": office.get("name"),
-        "Published": ms_to_iso(listing.get("publishingTime")),
-        "PublishedOrUpdated": ms_to_iso(listing.get("publishedOrUpdatedAt")),
+        "Published": ms_to_date_str(listing.get("publishingTime")),
+        "PublishedOrUpdated": ms_to_date_str(listing.get("publishedOrUpdatedAt")),
         "Link": f"https://www.etuovi.com/kohde/{listing.get('friendlyId')}",
         "FirstSeen": first_seen,
+        "Status": "Active",
+        "RemovedDate": None,
     }
 
 
@@ -139,7 +139,13 @@ def load_or_create_workbook(path: Path) -> Workbook:
 
 def get_or_create_sheet(wb: Workbook, sheet_name: str):
     if sheet_name in wb.sheetnames:
-        return wb[sheet_name]
+        ws = wb[sheet_name]
+        if [c.value for c in ws[1]] == COLUMNS:
+            return ws
+        # column schema changed since this sheet was created; it's just a
+        # fetched mirror of Etuovi's live data, so rebuild it from scratch
+        # rather than risk misaligned columns
+        del wb[sheet_name]
     # create_sheet() always starts a genuinely empty sheet at row 1; reusing
     # the workbook's default "Sheet" by renaming it instead leaves a phantom
     # blank row 1 that shifts the header down and breaks dedup on reload.
@@ -150,16 +156,25 @@ def get_or_create_sheet(wb: Workbook, sheet_name: str):
     return ws
 
 
-def existing_ids(ws) -> set:
-    ids = set()
-    header = [c.value for c in ws[1]]
-    if "FriendlyId" not in header:
-        return ids
-    id_col = header.index("FriendlyId")
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if row and row[id_col] is not None:
-            ids.add(str(row[id_col]))
-    return ids
+def header_map(ws) -> dict:
+    return {c.value: i + 1 for i, c in enumerate(ws[1])}  # 1-based column index
+
+
+def existing_rows(ws) -> dict:
+    """Map FriendlyId -> (row_number, status) for all existing data rows."""
+    cols = header_map(ws)
+    id_col = cols.get("FriendlyId")
+    status_col = cols.get("Status")
+    if id_col is None:
+        return {}
+    result = {}
+    for row_idx in range(2, ws.max_row + 1):
+        fid = ws.cell(row=row_idx, column=id_col).value
+        if fid is None:
+            continue
+        status = ws.cell(row=row_idx, column=status_col).value if status_col else None
+        result[str(fid)] = (row_idx, status)
+    return result
 
 
 def main():
@@ -170,12 +185,12 @@ def main():
     profiles = config["profiles"]
 
     wb = load_or_create_workbook(excel_path)
-    # one-time migration: the original single-profile version wrote everything
-    # to a "Listings" sheet, which matched today's "unrenovated" criteria
-    if "Listings" in wb.sheetnames and "Unrenovated" not in wb.sheetnames:
-        wb["Listings"].title = "Unrenovated"
+    if "Listings" in wb.sheetnames:
+        # leftover from the original single-profile version, fully superseded
+        # by the per-profile sheets below
+        del wb["Listings"]
 
-    now = datetime.now(timezone.utc).isoformat()
+    today = datetime.now(timezone.utc).strftime("%d.%m.%Y")
     total_added = 0
 
     for profile in profiles:
@@ -185,19 +200,35 @@ def main():
 
         sheet_name = profile.get("sheet", profile["name"])
         ws = get_or_create_sheet(wb, sheet_name)
-        seen = existing_ids(ws)
+        cols = header_map(ws)
+        existing = existing_rows(ws)
 
+        current_ids = set()
         added = 0
         for listing in listings:
             fid = str(listing.get("friendlyId"))
-            if fid in seen:
+            current_ids.add(fid)
+            if fid in existing:
+                row_idx, status = existing[fid]
+                if status == "Removed":
+                    ws.cell(row=row_idx, column=cols["Status"]).value = "Active"
+                    ws.cell(row=row_idx, column=cols["RemovedDate"]).value = None
                 continue
-            row = listing_to_row(listing, now)
+            row = listing_to_row(listing, today)
             ws.append([row[c] for c in COLUMNS])
-            seen.add(fid)
             added += 1
 
-        print(f"[{profile['name']}] fetched {len(listings)} matching listings, added {added} new rows to sheet '{sheet_name}'")
+        removed = 0
+        for fid, (row_idx, status) in existing.items():
+            if fid not in current_ids and status != "Removed":
+                ws.cell(row=row_idx, column=cols["Status"]).value = "Removed"
+                ws.cell(row=row_idx, column=cols["RemovedDate"]).value = today
+                removed += 1
+
+        print(
+            f"[{profile['name']}] fetched {len(listings)} matching listings, "
+            f"added {added} new, marked {removed} as removed, in sheet '{sheet_name}'"
+        )
         total_added += added
 
     wb.save(excel_path)
