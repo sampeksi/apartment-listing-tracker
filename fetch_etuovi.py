@@ -131,16 +131,23 @@ def listing_to_row(listing: dict, first_seen: str) -> dict:
     }
 
 
-def load_workbook_or_create(path: Path):
+def load_or_create_workbook(path: Path) -> Workbook:
     if path.exists():
-        wb = load_workbook(path)
-        ws = wb.active
-    else:
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Listings"
-        ws.append(COLUMNS)
-    return wb, ws
+        return load_workbook(path)
+    return Workbook()
+
+
+def get_or_create_sheet(wb: Workbook, sheet_name: str):
+    if sheet_name in wb.sheetnames:
+        return wb[sheet_name]
+    # create_sheet() always starts a genuinely empty sheet at row 1; reusing
+    # the workbook's default "Sheet" by renaming it instead leaves a phantom
+    # blank row 1 that shifts the header down and breaks dedup on reload.
+    ws = wb.create_sheet(title=sheet_name)
+    ws.append(COLUMNS)
+    if "Sheet" in wb.sheetnames and wb["Sheet"].max_row <= 1 and wb["Sheet"]["A1"].value is None:
+        del wb["Sheet"]
+    return ws
 
 
 def existing_ids(ws) -> set:
@@ -159,27 +166,42 @@ def main():
     criteria_path = Path(os.environ.get("CRITERIA_PATH", REPO_ROOT / "config" / "criteria.json"))
     excel_path = Path(os.environ.get("EXCEL_PATH", REPO_ROOT / "etuovi_listings.xlsx"))
 
-    criteria = load_criteria(criteria_path)
-    listings = fetch_all_listings(criteria)
-    districts = criteria.get("districts") or []
-    listings = [l for l in listings if matches_districts(l, districts)]
+    config = load_criteria(criteria_path)
+    profiles = config["profiles"]
 
-    wb, ws = load_workbook_or_create(excel_path)
-    seen = existing_ids(ws)
+    wb = load_or_create_workbook(excel_path)
+    # one-time migration: the original single-profile version wrote everything
+    # to a "Listings" sheet, which matched today's "unrenovated" criteria
+    if "Listings" in wb.sheetnames and "Unrenovated" not in wb.sheetnames:
+        wb["Listings"].title = "Unrenovated"
 
     now = datetime.now(timezone.utc).isoformat()
-    added = 0
-    for listing in listings:
-        fid = str(listing.get("friendlyId"))
-        if fid in seen:
-            continue
-        row = listing_to_row(listing, now)
-        ws.append([row[c] for c in COLUMNS])
-        seen.add(fid)
-        added += 1
+    total_added = 0
+
+    for profile in profiles:
+        listings = fetch_all_listings(profile)
+        districts = profile.get("districts") or []
+        listings = [l for l in listings if matches_districts(l, districts)]
+
+        sheet_name = profile.get("sheet", profile["name"])
+        ws = get_or_create_sheet(wb, sheet_name)
+        seen = existing_ids(ws)
+
+        added = 0
+        for listing in listings:
+            fid = str(listing.get("friendlyId"))
+            if fid in seen:
+                continue
+            row = listing_to_row(listing, now)
+            ws.append([row[c] for c in COLUMNS])
+            seen.add(fid)
+            added += 1
+
+        print(f"[{profile['name']}] fetched {len(listings)} matching listings, added {added} new rows to sheet '{sheet_name}'")
+        total_added += added
 
     wb.save(excel_path)
-    print(f"Fetched {len(listings)} matching listings, added {added} new rows to {excel_path}")
+    print(f"Done. {total_added} new rows added total to {excel_path}")
 
 
 if __name__ == "__main__":

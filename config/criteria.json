@@ -1,13 +1,34 @@
 {
-  "city": "Tampere",
-  "districts": ["Kaleva", "Amuri"],
-  "priceMax": 250000,
-  "yearMin": 1900,
-  "yearMax": 2010,
-  "roomCounts": ["THREE_ROOMS", "FOUR_ROOMS", "FIVE_ROOMS"],
-  "overallConditions": ["SATISFACTORY", "TOLERABLE"],
-  "ownershipTypes": ["OWN"],
-  "newBuildingSearchCriteria": "NO_NEW_BUILDINGS",
-  "bidType": "ALL",
-  "sellerType": "ALL"
+  "profiles": [
+    {
+      "name": "unrenovated",
+      "sheet": "Unrenovated",
+      "city": "Tampere",
+      "districts": ["Kaleva", "Amuri"],
+      "priceMax": 250000,
+      "yearMin": 1900,
+      "yearMax": 2010,
+      "roomCounts": ["THREE_ROOMS", "FOUR_ROOMS", "FIVE_ROOMS"],
+      "overallConditions": ["SATISFACTORY", "TOLERABLE"],
+      "ownershipTypes": ["OWN"],
+      "newBuildingSearchCriteria": "NO_NEW_BUILDINGS",
+      "bidType": "ALL",
+      "sellerType": "ALL"
+    },
+    {
+      "name": "renovated",
+      "sheet": "Renovated",
+      "city": "Tampere",
+      "districts": ["Kaleva", "Amuri"],
+      "priceMin": 300000,
+      "yearMin": 1900,
+      "yearMax": 2010,
+      "roomCounts": ["THREE_ROOMS", "FOUR_ROOMS", "FIVE_ROOMS"],
+      "overallConditions": ["GOOD"],
+      "ownershipTypes": ["OWN"],
+      "newBuildingSearchCriteria": "NO_NEW_BUILDINGS",
+      "bidType": "ALL",
+      "sellerType": "ALL"
+    }
+  ]
 }
