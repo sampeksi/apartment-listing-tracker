@@ -1,0 +1,13 @@
+{
+  "city": "Tampere",
+  "districts": ["Kaleva", "Amuri"],
+  "priceMax": 250000,
+  "yearMin": 1900,
+  "yearMax": 2010,
+  "roomCounts": ["THREE_ROOMS", "FOUR_ROOMS", "FIVE_ROOMS"],
+  "overallConditions": ["SATISFACTORY", "TOLERABLE"],
+  "ownershipTypes": ["OWN"],
+  "newBuildingSearchCriteria": "NO_NEW_BUILDINGS",
+  "bidType": "ALL",
+  "sellerType": "ALL"
+}

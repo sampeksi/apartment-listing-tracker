@@ -1,0 +1,41 @@
+name: Fetch Etuovi listings
+
+on:
+  schedule:
+    # 06:00 UTC = 08:00/09:00 Finnish time depending on DST
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install rclone
+        run: sudo apt-get update && sudo apt-get install -y rclone
+
+      - name: Restore rclone config
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+
+      - name: Download current Excel file from Google Drive
+        run: |
+          rclone copyto "${{ vars.EXCEL_CLOUD_PATH }}" etuovi_listings.xlsx \
+            || echo "No existing file in Google Drive yet, starting fresh."
+
+      - name: Fetch new listings and update Excel file
+        env:
+          EXCEL_PATH: etuovi_listings.xlsx
+        run: python fetch_etuovi.py
+
+      - name: Upload updated Excel file to Google Drive
+        run: rclone copyto etuovi_listings.xlsx "${{ vars.EXCEL_CLOUD_PATH }}"
