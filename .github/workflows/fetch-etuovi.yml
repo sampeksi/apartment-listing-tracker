@@ -2,8 +2,10 @@ name: Fetch Etuovi listings
 
 on:
   schedule:
-    # 06:00 UTC = 08:00/09:00 Finnish time depending on DST
-    - cron: "0 6 * * *"
+    # 06:17 UTC = 08:17/09:17 Finnish time depending on DST.
+    # Off the exact hour mark on purpose: GitHub Actions' scheduler is most
+    # contended right at :00, and can silently skip a run during high load.
+    - cron: "17 6 * * *"
   workflow_dispatch: {}
 
 jobs:
