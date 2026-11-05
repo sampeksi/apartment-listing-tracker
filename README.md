@@ -11,8 +11,31 @@ Runs on GitHub Actions — no server or always-on machine needed.
   year built). Edit this to change what gets fetched; it's not a secret.
 - `fetch_etuovi.py` — fetches listings (no login required) and appends
   new/unseen ones to the Excel file.
-- `.github/workflows/fetch-etuovi.yml` — daily cron (06:00 UTC) that downloads
-  the Excel file from Google Drive, runs the fetch, and re-uploads it.
+- `.github/workflows/fetch-etuovi.yml` — downloads the Excel file from Google
+  Drive, runs the fetch, and re-uploads it.
+
+**Scheduling**: the workflow's own `schedule:` trigger (cron, currently
+`17 6 * * *` UTC) is kept as a fallback, but GitHub's native cron proved
+unreliable for this repo — two consecutive days produced zero run attempts
+at all, a known issue for lower-traffic repos. The actual trigger is an
+external cron service ([cron-job.org](https://cron-job.org)) calling
+GitHub's `workflow_dispatch` REST API directly once a day. Setup:
+
+1. Create a fine-grained GitHub token (https://github.com/settings/tokens?type=beta),
+   scoped to only this repo, with **Actions: Read and write** permission.
+   Fine-grained tokens require an expiration date — note it down and plan to
+   regenerate before it lapses.
+2. Create a cron-job.org job (free account):
+   - URL: `https://api.github.com/repos/sampeksi/etuovi-tilastokeskus-mcp/actions/workflows/fetch-etuovi.yml/dispatches`
+   - Method: POST
+   - Headers: `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`, `Content-Type: application/json`
+   - Body: `{"ref":"main"}`
+   - Schedule daily at whatever time you like (note: cron-job.org schedules
+     in the job's configured timezone, not UTC)
+   - Enable the "execution of the cronjob fails" notification so a broken
+     run doesn't go unnoticed
+3. Test with cron-job.org's "Test run" button — a successful call returns
+   `204 No Content` and a new run appears in the repo's Actions tab.
 
 ### One-time setup
 
