@@ -37,6 +37,13 @@ COLUMNS = [
     "PublishedOrUpdated", "Link", "FirstSeen", "Status", "RemovedDate",
 ]
 
+BUILDING_HISTORY_SHEET = "BuildingHistory"
+BUILDING_HISTORY_COLUMNS = [
+    "Id", "BusinessId", "HousingCompanyName", "Address", "District", "Price",
+    "PricePerSqm", "AreaM2", "RoomStructure", "DaysOnMarket", "UnpublishedDate",
+    "FirstSeen",
+]
+
 REPO_ROOT = Path(__file__).resolve().parent
 
 
@@ -67,13 +74,17 @@ def build_search_body(criteria: dict) -> dict:
     return {k: v for k, v in body.items() if v is not None}
 
 
-def fetch_all_listings(criteria: dict) -> list:
+def make_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": USER_AGENT,
     })
+    return session
+
+
+def fetch_all_listings(session: requests.Session, criteria: dict) -> list:
     body = build_search_body(criteria)
 
     listings = []
@@ -94,6 +105,63 @@ def fetch_all_listings(criteria: dict) -> list:
         if not batch or first_result >= total:
             break
     return listings
+
+
+def fetch_announcement_details(session: requests.Session, friendly_id: str) -> dict:
+    resp = session.get(
+        "https://www.etuovi.com/api/v2/announcement/details",
+        params={"friendlyId": friendly_id},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def extract_embedded_json(html: str, key: str):
+    """Pull out the JSON value for "key": ... embedded in a page's inline
+    script, by bracket-matching rather than assuming the rest of the page
+    parses as JSON."""
+    marker = f'"{key}":'
+    idx = html.find(marker)
+    if idx == -1:
+        return None
+    start = idx + len(marker)
+    while html[start] in " \t\n\r":
+        start += 1
+    if html[start] not in "[{":
+        return None
+    open_ch, close_ch = html[start], ("]" if html[start] == "[" else "}")
+    depth, in_string, escape = 0, False, False
+    for i in range(start, len(html)):
+        c = html[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+        else:
+            if c == '"':
+                in_string = True
+            elif c == open_ch:
+                depth += 1
+            elif c == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return json.loads(html[start:i + 1])
+    return None
+
+
+def fetch_building_history(session: requests.Session, business_id: str) -> list:
+    # municipality/district path segments are decorative - the server
+    # resolves purely off the business ID and 301-redirects to the real URL
+    resp = session.get(
+        f"https://www.etuovi.com/myytavat-asunnot/x/x/taloyhtiot/{business_id}",
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return extract_embedded_json(resp.text, "unpublishedAnnouncements") or []
 
 
 def matches_districts(listing: dict, districts: list) -> bool:
@@ -131,16 +199,33 @@ def listing_to_row(listing: dict, first_seen: str) -> dict:
     }
 
 
+def building_history_row(business_id: str, company_name, record: dict, first_seen: str) -> dict:
+    return {
+        "Id": str(record.get("id")),
+        "BusinessId": business_id,
+        "HousingCompanyName": company_name,
+        "Address": record.get("addressLine1"),
+        "District": record.get("addressLine2"),
+        "Price": record.get("searchPrice"),
+        "PricePerSqm": record.get("pricePerSquare"),
+        "AreaM2": record.get("area"),
+        "RoomStructure": record.get("roomStructure"),
+        "DaysOnMarket": record.get("daysOnMarket"),
+        "UnpublishedDate": ms_to_date_str(record.get("unpublishingTime")),
+        "FirstSeen": first_seen,
+    }
+
+
 def load_or_create_workbook(path: Path) -> Workbook:
     if path.exists():
         return load_workbook(path)
     return Workbook()
 
 
-def get_or_create_sheet(wb: Workbook, sheet_name: str):
+def get_or_create_sheet(wb: Workbook, sheet_name: str, columns: list):
     if sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        if [c.value for c in ws[1]] == COLUMNS:
+        if [c.value for c in ws[1]] == columns:
             return ws
         # column schema changed since this sheet was created; it's just a
         # fetched mirror of Etuovi's live data, so rebuild it from scratch
@@ -150,10 +235,21 @@ def get_or_create_sheet(wb: Workbook, sheet_name: str):
     # the workbook's default "Sheet" by renaming it instead leaves a phantom
     # blank row 1 that shifts the header down and breaks dedup on reload.
     ws = wb.create_sheet(title=sheet_name)
-    ws.append(COLUMNS)
+    ws.append(columns)
     if "Sheet" in wb.sheetnames and wb["Sheet"].max_row <= 1 and wb["Sheet"]["A1"].value is None:
         del wb["Sheet"]
     return ws
+
+
+def existing_values(ws, column_name: str) -> set:
+    header = [c.value for c in ws[1]]
+    if column_name not in header:
+        return set()
+    col_idx = header.index(column_name)
+    return {
+        str(row[col_idx]) for row in ws.iter_rows(min_row=2, values_only=True)
+        if row and row[col_idx] is not None
+    }
 
 
 def header_map(ws) -> dict:
@@ -192,14 +288,17 @@ def main():
 
     today = datetime.now(timezone.utc).strftime("%d.%m.%Y")
     total_added = 0
+    session = make_session()
+    all_listings = []
 
     for profile in profiles:
-        listings = fetch_all_listings(profile)
+        listings = fetch_all_listings(session, profile)
         districts = profile.get("districts") or []
         listings = [l for l in listings if matches_districts(l, districts)]
+        all_listings.extend(listings)
 
         sheet_name = profile.get("sheet", profile["name"])
-        ws = get_or_create_sheet(wb, sheet_name)
+        ws = get_or_create_sheet(wb, sheet_name, COLUMNS)
         cols = header_map(ws)
         existing = existing_rows(ws)
 
@@ -230,6 +329,47 @@ def main():
             f"added {added} new, marked {removed} as removed, in sheet '{sheet_name}'"
         )
         total_added += added
+
+    # --- building history enrichment ---
+    # resolve each listing's housing company, deduped by business ID so a
+    # building with several listings only costs one history fetch
+    business_ids = {}
+    for listing in all_listings:
+        fid = listing.get("friendlyId")
+        if not fid:
+            continue
+        try:
+            details = fetch_announcement_details(session, fid)
+        except requests.RequestException as e:
+            print(f"Warning: could not fetch details for {fid}: {e}")
+            continue
+        housing_company = (details.get("property") or {}).get("housingCompany") or {}
+        business_id = housing_company.get("businessId")
+        if business_id and business_id not in business_ids:
+            business_ids[business_id] = housing_company.get("name")
+
+    bh_ws = get_or_create_sheet(wb, BUILDING_HISTORY_SHEET, BUILDING_HISTORY_COLUMNS)
+    seen_record_ids = existing_values(bh_ws, "Id")
+    bh_added = 0
+    for business_id, company_name in business_ids.items():
+        try:
+            history = fetch_building_history(session, business_id)
+        except requests.RequestException as e:
+            print(f"Warning: could not fetch building history for {business_id}: {e}")
+            continue
+        for record in history:
+            record_id = str(record.get("id"))
+            if record_id in seen_record_ids:
+                continue
+            row = building_history_row(business_id, company_name, record, today)
+            bh_ws.append([row[c] for c in BUILDING_HISTORY_COLUMNS])
+            seen_record_ids.add(record_id)
+            bh_added += 1
+
+    print(
+        f"[building-history] resolved {len(business_ids)} unique buildings, "
+        f"added {bh_added} new history rows"
+    )
 
     wb.save(excel_path)
     print(f"Done. {total_added} new rows added total to {excel_path}")

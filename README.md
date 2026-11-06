@@ -14,6 +14,15 @@ Runs on GitHub Actions — no server or always-on machine needed.
 - `.github/workflows/fetch-etuovi.yml` — downloads the Excel file from Google
   Drive, runs the fetch, and re-uploads it.
 
+**Sheets produced**: `Unrenovated` and `Renovated` (one per profile in
+`criteria.json`), each tracking active listings with `Status`/`RemovedDate`
+for delisting, plus a shared `BuildingHistory` sheet — for every currently
+listed apartment, its housing company's past sold/withdrawn listings (price,
+price/m², days on market), so a building's own sale history is visible
+alongside current asking prices. This sheet is a flat table across all
+buildings (not one sheet per building), append-only, deduped by each
+historical record's `Id`.
+
 **Scheduling**: the workflow's own `schedule:` trigger (cron, currently
 `17 6 * * *` UTC) is kept as a fallback, but GitHub's native cron proved
 unreliable for this repo — two consecutive days produced zero run attempts
