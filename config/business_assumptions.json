@@ -1,0 +1,35 @@
+{
+  "global": {
+    "housingCompanyLoanRate": 0.04,
+    "housingCompanyLoanAmortization": "linear",
+    "bankLoanRate": 0.0534,
+    "bankLoanTermYears": 15,
+    "bankLoanToValue": 0.70,
+    "bankLoanAmortization": "linear",
+    "bankLoanServiceFeeMonthly": 2.50,
+    "rentGrowth": 0.01,
+    "maintenanceChargeGrowth": 0.025,
+    "repairReserveGrowth": 0.01,
+    "occupancyRate": 0.98,
+    "marketPriceChange": 0.005,
+    "collateralValueReturnShare": 1.00,
+    "transferTaxRate": 0.015,
+    "taxRate": 0.20
+  },
+  "regionOverrides": [
+    {"city": "Tampere", "areaWeighting": "Multisilta", "roomCount": "ONE_ROOM", "rentGrowth": 0.022, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.025, "occupancyRate": 0.965},
+    {"city": "Tampere", "areaWeighting": "Multisilta", "roomCount": "TWO_ROOMS", "rentGrowth": 0.024, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.028, "occupancyRate": 0.975},
+    {"city": "Pirkkala", "roomCount": "ONE_ROOM", "rentGrowth": 0.022, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.025, "occupancyRate": 0.955},
+    {"city": "Pirkkala", "roomCount": "TWO_ROOMS", "rentGrowth": 0.028, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.030, "occupancyRate": 0.965},
+    {"city": "Nokia", "areaWeighting": "Mukaniitty", "roomCount": "ONE_ROOM", "rentGrowth": 0.013, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.019, "occupancyRate": 0.940},
+    {"city": "Nokia", "areaWeighting": "Mukaniitty", "roomCount": "TWO_ROOMS", "rentGrowth": 0.015, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.016, "occupancyRate": 0.950},
+    {"city": "Lempäälä", "areaWeighting": "Keskusta", "roomCount": "ONE_ROOM", "rentGrowth": 0.025, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.020, "occupancyRate": 0.940},
+    {"city": "Lempäälä", "areaWeighting": "Keskusta", "roomCount": "TWO_ROOMS", "rentGrowth": 0.020, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.019, "occupancyRate": 0.950},
+    {"city": "Ylöjärvi", "roomCount": "ONE_ROOM", "rentGrowth": 0.015, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.015, "occupancyRate": 0.930},
+    {"city": "Ylöjärvi", "roomCount": "TWO_ROOMS", "rentGrowth": 0.018, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.020, "occupancyRate": 0.940},
+    {"city": "Kangasala", "roomCount": "ONE_ROOM", "rentGrowth": 0.015, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.015, "occupancyRate": 0.930},
+    {"city": "Kangasala", "roomCount": "TWO_ROOMS", "rentGrowth": 0.018, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.020, "occupancyRate": 0.940},
+    {"city": "Valkeakoski", "areaWeighting": "Vääräkoivu", "roomCount": "ONE_ROOM", "rentGrowth": 0.011, "maintenanceChargeGrowth": 0.045, "marketPriceChange": 0.000, "occupancyRate": 0.880},
+    {"city": "Valkeakoski", "areaWeighting": "Vääräkoivu", "roomCount": "TWO_ROOMS", "rentGrowth": 0.008, "maintenanceChargeGrowth": 0.045, "marketPriceChange": 0.002, "occupancyRate": 0.900}
+  ]
+}

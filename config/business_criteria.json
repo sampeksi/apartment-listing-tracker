@@ -2,8 +2,7 @@
   "profiles": [
     {
       "name": "business_sale",
-      "sheet": "BusinessSale",
-      "cities": ["Pirkkala", "Kangasala", "Nokia", "Lempäälä", "Tampere", "Valkeakoski"],
+      "cities": ["Pirkkala", "Kangasala", "Nokia", "Lempäälä", "Tampere", "Valkeakoski", "Ylöjärvi"],
       "priceMax": 110000,
       "roomCounts": ["ONE_ROOM", "TWO_ROOMS"],
       "ownershipTypes": ["OWN"],
