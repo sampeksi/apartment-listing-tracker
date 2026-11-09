@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "name": "business_sale",
+      "sheet": "BusinessSale",
+      "cities": ["Pirkkala", "Kangasala", "Nokia", "Lempäälä", "Tampere", "Valkeakoski"],
+      "priceMax": 110000,
+      "roomCounts": ["ONE_ROOM", "TWO_ROOMS"],
+      "ownershipTypes": ["OWN"],
+      "newBuildingSearchCriteria": "ALL_PROPERTIES"
+    }
+  ]
+}

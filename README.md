@@ -67,3 +67,19 @@ is kept as a harmless fallback.
 7. Actions tab → "Fetch apartment listings" → Run workflow → check Drive.
 
 If auth starts failing after a long time, redo steps 3 and 5.
+
+## Business listing pipeline (separate flow)
+
+`fetch_business.py` + `config/business_criteria.json` + `fetch-business.yml`:
+same mechanics as above (reuses `RCLONE_CONF_B64`/`LISTING_SITE_BASE_URL`),
+different search shape (whole cities, not city+district) and a different
+Drive file. Needs one more repo variable: `BUSINESS_EXCEL_CLOUD_PATH`.
+
+This is the foundation for a larger, still-in-progress flow: DCF-based
+investment calculus (ported from a reference spreadsheet), rent comps from
+a sibling rental-listing site, an LLM analysis pass, and Telegram delivery
+of a daily new-listings digest. None of that is built yet — this stage is
+just the fetch + dedup layer, which a first run already uses as a backfill
+(everything found gets recorded as seen; only genuinely new listings on
+later runs are candidates for the analysis/notification steps once they
+exist).

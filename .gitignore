@@ -3,4 +3,5 @@ __pycache__/
 .venv/
 .env
 listings.xlsx
+business_listings.xlsx
 rclone.conf
