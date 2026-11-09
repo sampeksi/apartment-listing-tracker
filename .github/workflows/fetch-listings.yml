@@ -1,4 +1,4 @@
-name: Fetch Etuovi listings
+name: Fetch apartment listings
 
 on:
   schedule:
@@ -31,13 +31,14 @@ jobs:
 
       - name: Download current Excel file from Google Drive
         run: |
-          rclone copyto "${{ vars.EXCEL_CLOUD_PATH }}" etuovi_listings.xlsx \
+          rclone copyto "${{ vars.EXCEL_CLOUD_PATH }}" listings.xlsx \
             || echo "No existing file in Google Drive yet, starting fresh."
 
       - name: Fetch new listings and update Excel file
         env:
-          EXCEL_PATH: etuovi_listings.xlsx
-        run: python fetch_etuovi.py
+          EXCEL_PATH: listings.xlsx
+          LISTING_SITE_BASE_URL: ${{ secrets.LISTING_SITE_BASE_URL }}
+        run: python fetch_listings.py
 
       - name: Upload updated Excel file to Google Drive
-        run: rclone copyto etuovi_listings.xlsx "${{ vars.EXCEL_CLOUD_PATH }}"
+        run: rclone copyto listings.xlsx "${{ vars.EXCEL_CLOUD_PATH }}"

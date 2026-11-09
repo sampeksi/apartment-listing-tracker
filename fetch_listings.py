@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Fetch new Etuovi listings matching saved criteria and append them to an Excel sheet.
+"""Fetch new listings matching saved criteria and append them to an Excel sheet.
 
-Uses Etuovi's public (unauthenticated) announcement search API. District-level
-filtering (e.g. "Kaleva") isn't resolvable by name through the API, so this
-fetches all matching listings for the configured city and filters client-side
-on the listing's addressLine2.
+Uses the target site's public (unauthenticated) announcement search API.
+District-level filtering (e.g. "Kaleva") isn't resolvable by name through the
+API, so this fetches all matching listings for the configured city and
+filters client-side on the listing's addressLine2.
+
+BASE_URL is deliberately not hardcoded here - it comes only from the
+LISTING_SITE_BASE_URL env var (a GitHub secret in CI), so the target site
+isn't a plain string in this source file.
 """
 import json
 import os
@@ -14,7 +18,6 @@ from pathlib import Path
 import requests
 from openpyxl import Workbook, load_workbook
 
-API_URL = "https://www.etuovi.com/api/v2/announcements/search/listpage"
 PAGE_SIZE = 100
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -84,8 +87,9 @@ def make_session() -> requests.Session:
     return session
 
 
-def fetch_all_listings(session: requests.Session, criteria: dict) -> list:
+def fetch_all_listings(session: requests.Session, criteria: dict, base_url: str) -> list:
     body = build_search_body(criteria)
+    url = f"{base_url}/api/v2/announcements/search/listpage"
 
     listings = []
     first_result = 0
@@ -95,7 +99,7 @@ def fetch_all_listings(session: requests.Session, criteria: dict) -> list:
             "maxResults": PAGE_SIZE,
             "page": first_result // PAGE_SIZE + 1,
         }
-        resp = session.post(API_URL, json=body, timeout=30)
+        resp = session.post(url, json=body, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         batch = data.get("announcements", [])
@@ -107,9 +111,9 @@ def fetch_all_listings(session: requests.Session, criteria: dict) -> list:
     return listings
 
 
-def fetch_announcement_details(session: requests.Session, friendly_id: str) -> dict:
+def fetch_announcement_details(session: requests.Session, friendly_id: str, base_url: str) -> dict:
     resp = session.get(
-        "https://www.etuovi.com/api/v2/announcement/details",
+        f"{base_url}/api/v2/announcement/details",
         params={"friendlyId": friendly_id},
         timeout=30,
     )
@@ -153,11 +157,11 @@ def extract_embedded_json(html: str, key: str):
     return None
 
 
-def fetch_building_history(session: requests.Session, business_id: str) -> list:
+def fetch_building_history(session: requests.Session, business_id: str, base_url: str) -> list:
     # municipality/district path segments are decorative - the server
     # resolves purely off the business ID and 301-redirects to the real URL
     resp = session.get(
-        f"https://www.etuovi.com/myytavat-asunnot/x/x/taloyhtiot/{business_id}",
+        f"{base_url}/myytavat-asunnot/x/x/taloyhtiot/{business_id}",
         timeout=30,
     )
     resp.raise_for_status()
@@ -177,7 +181,7 @@ def ms_to_date_str(ms):
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%d.%m.%Y")
 
 
-def listing_to_row(listing: dict, first_seen: str) -> dict:
+def listing_to_row(listing: dict, first_seen: str, base_url: str) -> dict:
     room_count = listing.get("roomCount")
     return {
         "FriendlyId": listing.get("friendlyId"),
@@ -192,7 +196,7 @@ def listing_to_row(listing: dict, first_seen: str) -> dict:
         "YearBuilt": listing.get("constructionFinishedYear"),
         "Published": ms_to_date_str(listing.get("publishingTime")),
         "PublishedOrUpdated": ms_to_date_str(listing.get("publishedOrUpdatedAt")),
-        "Link": f"https://www.etuovi.com/kohde/{listing.get('friendlyId')}",
+        "Link": f"{base_url}/kohde/{listing.get('friendlyId')}",
         "FirstSeen": first_seen,
         "Status": "Active",
         "RemovedDate": None,
@@ -228,8 +232,8 @@ def get_or_create_sheet(wb: Workbook, sheet_name: str, columns: list):
         if [c.value for c in ws[1]] == columns:
             return ws
         # column schema changed since this sheet was created; it's just a
-        # fetched mirror of Etuovi's live data, so rebuild it from scratch
-        # rather than risk misaligned columns
+        # fetched mirror of the source site's live data, so rebuild it from
+        # scratch rather than risk misaligned columns
         del wb[sheet_name]
     # create_sheet() always starts a genuinely empty sheet at row 1; reusing
     # the workbook's default "Sheet" by renaming it instead leaves a phantom
@@ -275,7 +279,10 @@ def existing_rows(ws) -> dict:
 
 def main():
     criteria_path = Path(os.environ.get("CRITERIA_PATH", REPO_ROOT / "config" / "criteria.json"))
-    excel_path = Path(os.environ.get("EXCEL_PATH", REPO_ROOT / "etuovi_listings.xlsx"))
+    excel_path = Path(os.environ.get("EXCEL_PATH", REPO_ROOT / "listings.xlsx"))
+    base_url = os.environ.get("LISTING_SITE_BASE_URL")
+    if not base_url:
+        raise SystemExit("LISTING_SITE_BASE_URL environment variable must be set")
 
     config = load_criteria(criteria_path)
     profiles = config["profiles"]
@@ -292,7 +299,7 @@ def main():
     all_listings = []
 
     for profile in profiles:
-        listings = fetch_all_listings(session, profile)
+        listings = fetch_all_listings(session, profile, base_url)
         districts = profile.get("districts") or []
         listings = [l for l in listings if matches_districts(l, districts)]
         all_listings.extend(listings)
@@ -313,7 +320,7 @@ def main():
                     ws.cell(row=row_idx, column=cols["Status"]).value = "Active"
                     ws.cell(row=row_idx, column=cols["RemovedDate"]).value = None
                 continue
-            row = listing_to_row(listing, today)
+            row = listing_to_row(listing, today, base_url)
             ws.append([row[c] for c in COLUMNS])
             added += 1
 
@@ -339,7 +346,7 @@ def main():
         if not fid:
             continue
         try:
-            details = fetch_announcement_details(session, fid)
+            details = fetch_announcement_details(session, fid, base_url)
         except requests.RequestException as e:
             print(f"Warning: could not fetch details for {fid}: {e}")
             continue
@@ -353,7 +360,7 @@ def main():
     bh_added = 0
     for business_id, company_name in business_ids.items():
         try:
-            history = fetch_building_history(session, business_id)
+            history = fetch_building_history(session, business_id, base_url)
         except requests.RequestException as e:
             print(f"Warning: could not fetch building history for {business_id}: {e}")
             continue

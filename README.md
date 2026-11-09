@@ -1,104 +1,69 @@
-# etuovi-tilastokeskus-mcp
+# apartment-listing-tracker
 
-## Etuovi listing fetch pipeline
+## Apartment listing fetch pipeline
 
-Daily job that fetches new apartment listings matching your saved criteria from
-Etuovi's public search API and appends them to an Excel file kept in Google
-Drive (so it syncs to your PC automatically via Google Drive desktop sync).
-Runs on GitHub Actions — no server or always-on machine needed.
+Daily job that fetches new apartment listings matching saved criteria from a
+public real-estate listing search and appends them to an Excel file kept in
+Google Drive (syncs to PC via Google Drive desktop sync). Runs on GitHub
+Actions.
 
-- `config/criteria.json` — your search filters (city, districts, price, rooms,
-  year built). Edit this to change what gets fetched; it's not a secret.
-- `fetch_etuovi.py` — fetches listings (no login required) and appends
-  new/unseen ones to the Excel file.
-- `.github/workflows/fetch-etuovi.yml` — downloads the Excel file from Google
-  Drive, runs the fetch, and re-uploads it.
+- `config/criteria.json` — search filters (city, districts, price, rooms,
+  year built). Not a secret.
+- `fetch_listings.py` — fetches listings (no login required) and appends
+  new/unseen ones to the Excel file. Needs `LISTING_SITE_BASE_URL` set (see
+  below) — deliberately not hardcoded in source.
+- `.github/workflows/fetch-listings.yml` — downloads the Excel file from
+  Google Drive, runs the fetch, re-uploads it.
 
-**Sheets produced**: `Unrenovated` and `Renovated` (one per profile in
-`criteria.json`), each tracking active listings with `Status`/`RemovedDate`
-for delisting, plus a shared `BuildingHistory` sheet — for every currently
-listed apartment, its housing company's past sold/withdrawn listings (price,
-price/m², days on market), so a building's own sale history is visible
-alongside current asking prices. This sheet is a flat table across all
-buildings (not one sheet per building), append-only, deduped by each
-historical record's `Id`.
+**Sheets**: `Unrenovated`/`Renovated` (one per profile), tracking active
+listings with `Status`/`RemovedDate` for delisting, plus a shared
+`BuildingHistory` sheet (per-building sold/withdrawn history, flat table
+across all buildings, deduped by record `Id`). Note: `BuildingHistory` prices
+are last-asking-price-before-delisting, not confirmed sale prices.
 
-**Scheduling**: the workflow's own `schedule:` trigger (cron, currently
-`17 6 * * *` UTC) is kept as a fallback, but GitHub's native cron proved
-unreliable for this repo — two consecutive days produced zero run attempts
-at all, a known issue for lower-traffic repos. The actual trigger is an
-external cron service ([cron-job.org](https://cron-job.org)) calling
-GitHub's `workflow_dispatch` REST API directly once a day. Setup:
+**Scheduling**: GitHub's native `schedule:` cron is unreliable for low-traffic
+repos (confirmed — zero runs over two days despite a valid config), so the
+real trigger is an external cron service ([cron-job.org](https://cron-job.org))
+calling `workflow_dispatch` via the GitHub REST API. The in-file `schedule:`
+is kept as a harmless fallback.
 
-1. Create a fine-grained GitHub token (https://github.com/settings/tokens?type=beta),
-   scoped to only this repo, with **Actions: Read and write** permission.
-   Fine-grained tokens require an expiration date — note it down and plan to
-   regenerate before it lapses.
-2. Create a cron-job.org job (free account):
-   - URL: `https://api.github.com/repos/sampeksi/etuovi-tilastokeskus-mcp/actions/workflows/fetch-etuovi.yml/dispatches`
-   - Method: POST
-   - Headers: `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`, `Content-Type: application/json`
-   - Body: `{"ref":"main"}`
-   - Schedule daily at whatever time you like (note: cron-job.org schedules
-     in the job's configured timezone, not UTC)
-   - Enable the "execution of the cronjob fails" notification so a broken
-     run doesn't go unnoticed
-3. Test with cron-job.org's "Test run" button — a successful call returns
-   `204 No Content` and a new run appears in the repo's Actions tab.
+- Fine-grained GitHub token (github.com/settings/tokens?type=beta), scoped to
+  this repo only, **Actions: Read and write**. Expires — note the date.
+- cron-job.org job: POST to
+  `https://api.github.com/repos/sampeksi/apartment-listing-tracker/actions/workflows/fetch-listings.yml/dispatches`,
+  headers `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`,
+  `Content-Type: application/json`, body `{"ref":"main"}`. Daily schedule
+  (cron-job.org uses its own configured timezone, not UTC). Turn on the
+  "execution fails" notification.
 
 ### One-time setup
 
-1. **Install rclone locally** (on your own machine, not in CI):
-   https://rclone.org/downloads/
+1. Install rclone locally: https://rclone.org/downloads/
 
-2. **Create your own Google OAuth client** (rclone's shared client ID is being
-   retired during 2026, and apps left in "Testing" mode get refresh tokens
-   that expire after 7 days — both would silently break the daily cron, so
-   don't skip this):
-   - https://console.cloud.google.com/ → create a new project
-   - APIs & Services → Library → enable **Google Drive API**
-   - APIs & Services → OAuth consent screen → User type **External**, fill in
-     app name + your email, skip scopes, then **set publishing status to
-     "In production"** (still fine unverified — you'll just click through an
-     "unverified app" warning once, since it's your own account)
-   - APIs & Services → Credentials → Create Credentials → OAuth client ID →
-     application type **Desktop app** → copy the Client ID and Client Secret
+2. Create your own Google OAuth client (rclone's shared one is being retired
+   in 2026; apps left in "Testing" mode get 7-day refresh-token expiry):
+   - console.cloud.google.com → new project → enable **Google Drive API**
+   - OAuth consent screen → External, app name + email, skip scopes, then
+     **publish to production** (unverified is fine, click through the warning)
+   - Credentials → OAuth client ID → **Desktop app** → copy Client ID/Secret
 
-3. **Authorize a Google Drive remote** (use your personal Google account, not
-   a managed/work account — those require admin consent and will likely be
-   blocked):
-   ```
-   rclone config
-   ```
-   Choose `n` (new remote), name it `gdrive`, pick the `drive` storage type
-   (Google Drive). Paste the Client ID / Client Secret from step 2. When
-   asked for **scope**, choose `drive.file` ("Access to files created by
-   rclone only") rather than full `drive` access — rclone only needs to
-   manage the one file it creates, nothing else in your Drive. Leave
-   `root_folder_id` and `service_account_file` blank, skip advanced config
-   (`n`), and use auto config (`y`) — it opens a browser to log into Google
-   and approve access (click through the unverified-app warning). Answer `n`
-   when asked if this is a Shared/Team Drive, then confirm to keep the
-   remote.
+3. `rclone config` → new remote named `gdrive`, type `drive`, paste
+   Client ID/Secret from step 2, scope `drive.file` (not full `drive`),
+   leave `root_folder_id`/`service_account_file` blank, auto config → `y`
+   (click through unverified-app warning), not a Shared Drive.
 
-4. **Pick a folder/file name** for the sheet, e.g. `Etuovi/etuovi_listings.xlsx`.
-   With `drive.file` scope nothing exists yet — the first real upload (step 7,
-   or the workflow's first run) is what actually creates it in your Drive.
+4. Pick a Drive folder/file path, e.g. `Listings/listings.xlsx` — only
+   created on first real upload (drive.file scope).
 
-5. **Base64-encode your rclone config** so it can be stored as a GitHub secret:
-   ```
-   base64 -w0 ~/.config/rclone/rclone.conf
-   ```
-   (On macOS, drop `-w0`: `base64 ~/.config/rclone/rclone.conf | tr -d '\n'`)
+5. `base64 -w0 ~/.config/rclone/rclone.conf` (macOS: drop `-w0`, pipe through
+   `tr -d '\n'`).
 
-6. **Add repo secrets/variables** (Settings → Secrets and variables → Actions):
-   - Secret `RCLONE_CONF_B64` — the base64 string from step 5.
-   - Variable `EXCEL_CLOUD_PATH` — e.g. `gdrive:Etuovi/etuovi_listings.xlsx`.
+6. Repo secrets/variables (Settings → Secrets and variables → Actions):
+   - Secret `RCLONE_CONF_B64` — output of step 5.
+   - Secret `LISTING_SITE_BASE_URL` — the target site's base URL (not written
+     here on purpose — you know what it is).
+   - Variable `EXCEL_CLOUD_PATH` — e.g. `gdrive:Listings/listings.xlsx`.
 
-7. **Test it**: Actions tab → "Fetch Etuovi listings" → "Run workflow", then
-   check the file appears in your Google Drive (Drive web UI, or the synced
-   folder on your PC if you have Google Drive for desktop installed).
+7. Actions tab → "Fetch apartment listings" → Run workflow → check Drive.
 
-Note: Google can occasionally require re-authorization if the OAuth consent
-is revoked or expires; if the workflow starts failing to authenticate after a
-long time, just redo steps 3 and 5 to refresh the stored config.
+If auth starts failing after a long time, redo steps 3 and 5.
