@@ -3,6 +3,6 @@ __pycache__/
 .venv/
 .env
 listings.xlsx
-business_listings.xlsx
 config/DCF Template.xlsx
 rclone.conf
+new_business_listings.json
