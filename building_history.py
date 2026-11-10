@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Housing-company page fetching/parsing, shared by both pipelines.
 
-The hobby pipeline uses this for its BuildingHistory sheet (sale history).
-The business pipeline uses it to ground rent estimates in a building's own
-actual rental history, rather than only a city/district-wide market
-aggregate - the same page's "unpublishedAnnouncements" array turns out to
-mix sale AND rental entries together, distinguished by rental-only fields
-(rentalUniqueNo, rentPeriod) that sale entries don't have.
+The page embeds four separate arrays: publishedAnnouncements/
+unpublishedAnnouncements (sale listings - what the hobby pipeline's
+BuildingHistory feature uses) and publishedRentalAnnouncements/
+unpublishedRentalAnnouncements (rental listings for the same building -
+often literally the same physical unit, re-rented repeatedly over years,
+which makes this a far more precise rent comp than a city/district-wide
+aggregate). These are genuinely separate keys, not one array mixing both
+kinds of listing together.
 """
 import json
 
@@ -49,9 +51,7 @@ def extract_embedded_json(html: str, key: str):
     return None
 
 
-def fetch_unpublished_history(session: requests.Session, business_id: str, base_url: str) -> list:
-    """A building's full unpublished-listing history - sale and rental
-    entries mixed together, undifferentiated."""
+def fetch_housing_company_page(session: requests.Session, business_id: str, base_url: str) -> str:
     # municipality/district path segments are decorative - the server
     # resolves purely off the business ID and 301-redirects to the real URL
     resp = session.get(
@@ -59,23 +59,21 @@ def fetch_unpublished_history(session: requests.Session, business_id: str, base_
         timeout=30,
     )
     resp.raise_for_status()
-    return extract_embedded_json(resp.text, "unpublishedAnnouncements") or []
-
-
-def split_sale_and_rental(records: list) -> tuple[list, list]:
-    """Rental entries carry rentalUniqueNo and rentPeriod (their searchPrice
-    is a monthly rent, not a sale price); sale entries have neither."""
-    sale, rental = [], []
-    for r in records:
-        if r.get("rentalUniqueNo") or r.get("rentPeriod"):
-            rental.append(r)
-        else:
-            sale.append(r)
-    return sale, rental
+    return resp.text
 
 
 def fetch_building_history(session: requests.Session, business_id: str, base_url: str) -> list:
-    """Backwards-compatible alias for the hobby pipeline: sale-only history
-    (what it's always meant by "building history")."""
-    sale, _rental = split_sale_and_rental(fetch_unpublished_history(session, business_id, base_url))
-    return sale
+    """Sale history for this building (hobby pipeline's BuildingHistory)."""
+    html = fetch_housing_company_page(session, business_id, base_url)
+    return extract_embedded_json(html, "unpublishedAnnouncements") or []
+
+
+def fetch_building_rental_history(session: requests.Session, business_id: str, base_url: str) -> tuple[list, list]:
+    """(active, past) rental listings for this specific building - often the
+    exact same unit, re-rented repeatedly over years. Much more precise than
+    a city/district-wide comp, when it exists at all (not every building has
+    rental history)."""
+    html = fetch_housing_company_page(session, business_id, base_url)
+    active = extract_embedded_json(html, "publishedRentalAnnouncements") or []
+    past = extract_embedded_json(html, "unpublishedRentalAnnouncements") or []
+    return active, past

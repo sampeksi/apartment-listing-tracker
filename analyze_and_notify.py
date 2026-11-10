@@ -23,6 +23,7 @@ from pathlib import Path
 
 import requests
 
+from building_history import fetch_building_rental_history
 from business_dcf import ListingInputs, load_assumptions, run_scenarios
 from llm_analysis import analyze_listing
 from rent_comps import make_session as make_rental_session, estimate_rent
@@ -99,12 +100,16 @@ def format_message(listing: dict, details: dict, rent_estimate, scenarios: dict,
         f"{' (open bidding, starting price)' if details.get('openBiddingInUse') else ''} | "
         f"Debt-free: {get_debt_free_price(details):,.0f} €",
         "",
-        f"Rent estimate: {rent_estimate.median_rent:,.0f} €/mo "
+        f"Area rent comp: {rent_estimate.median_rent:,.0f} €/mo "
         f"(n={rent_estimate.sample_size}"
         f"{', regional' if rent_estimate.widened_to_region else ''})",
-        "",
-        "*Scenarios (conservative / balanced / full leverage):*",
     ]
+
+    refined_rent = llm_result.get("estimatedMonthlyRent")
+    if refined_rent and abs(refined_rent - rent_estimate.median_rent) >= 1:
+        lines.append(f"Rent used in scenarios: {refined_rent:,.0f} €/mo (refined from building history)")
+
+    lines += ["", "*Scenarios (conservative / balanced / full leverage):*"]
 
     rows = [
         ("netYieldBeforeTax", "Net yield (pre-tax)", "pct"),
@@ -184,17 +189,26 @@ def main():
                 print(f"  No rent comps found for {city}/{room_count}, skipping.")
                 continue
 
+            business_id = (property_info.get("housingCompany") or {}).get("businessId")
+            building_rental_history = ([], [])
+            if business_id:
+                try:
+                    building_rental_history = fetch_building_rental_history(sale_session, business_id, sale_base_url)
+                except Exception as e:
+                    print(f"  Warning: could not fetch building rental history: {e}")
+
             baseline_inputs = build_listing_inputs(details, rent_estimate.median_rent)
             baseline_scenarios = run_scenarios(baseline_inputs, assumptions)
 
-            llm_result = analyze_listing(details, rent_estimate, baseline_scenarios)
+            llm_result = analyze_listing(details, rent_estimate, baseline_scenarios, building_rental_history)
 
+            # safe single-variable substitutions, same reasoning for both:
+            # no compounding cross-variable interaction with the rest of the
+            # model, unlike the renovation uplift estimates
+            refined_rent = llm_result.get("estimatedMonthlyRent") or rent_estimate.median_rent
             loan_term = llm_result.get("housingCompanyLoanTermYears")
-            if loan_term:
-                refined_inputs = build_listing_inputs(details, rent_estimate.median_rent, loan_term=loan_term)
-                scenarios = run_scenarios(refined_inputs, assumptions)
-            else:
-                scenarios = baseline_scenarios
+            refined_inputs = build_listing_inputs(details, refined_rent, loan_term=loan_term)
+            scenarios = run_scenarios(refined_inputs, assumptions)
 
             message = format_message(listing, details, rent_estimate, scenarios, llm_result)
             send_message(message)
