@@ -18,6 +18,8 @@ from pathlib import Path
 import requests
 from openpyxl import Workbook, load_workbook
 
+from building_history import fetch_building_history
+
 PAGE_SIZE = 100
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -119,53 +121,6 @@ def fetch_announcement_details(session: requests.Session, friendly_id: str, base
     )
     resp.raise_for_status()
     return resp.json()
-
-
-def extract_embedded_json(html: str, key: str):
-    """Pull out the JSON value for "key": ... embedded in a page's inline
-    script, by bracket-matching rather than assuming the rest of the page
-    parses as JSON."""
-    marker = f'"{key}":'
-    idx = html.find(marker)
-    if idx == -1:
-        return None
-    start = idx + len(marker)
-    while html[start] in " \t\n\r":
-        start += 1
-    if html[start] not in "[{":
-        return None
-    open_ch, close_ch = html[start], ("]" if html[start] == "[" else "}")
-    depth, in_string, escape = 0, False, False
-    for i in range(start, len(html)):
-        c = html[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif c == "\\":
-                escape = True
-            elif c == '"':
-                in_string = False
-        else:
-            if c == '"':
-                in_string = True
-            elif c == open_ch:
-                depth += 1
-            elif c == close_ch:
-                depth -= 1
-                if depth == 0:
-                    return json.loads(html[start:i + 1])
-    return None
-
-
-def fetch_building_history(session: requests.Session, business_id: str, base_url: str) -> list:
-    # municipality/district path segments are decorative - the server
-    # resolves purely off the business ID and 301-redirects to the real URL
-    resp = session.get(
-        f"{base_url}/myytavat-asunnot/x/x/taloyhtiot/{business_id}",
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return extract_embedded_json(resp.text, "unpublishedAnnouncements") or []
 
 
 def matches_districts(listing: dict, districts: list) -> bool:
