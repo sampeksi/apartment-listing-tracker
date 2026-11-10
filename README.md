@@ -76,15 +76,32 @@ different search shape than the hobby pipeline (whole cities, not
 city+district), and a different state mechanism — `state/business_seen.json`
 (friendlyId → first-seen date) is committed straight back to this repo by
 the workflow (needs `permissions: contents: write`, already set), rather
-than synced anywhere external. Only reuses one secret,
-`LISTING_SITE_BASE_URL` — no rclone/Drive setup needed for this flow at all.
+than synced anywhere external.
 
 Each run writes any genuinely new listings to `new_business_listings.json`
-(gitignored, ephemeral per-run) for the next stage to consume. That next
-stage — DCF-based investment calculus (ported from a reference spreadsheet),
-rent comps from a sibling rental-listing site, an LLM analysis pass, and
-Telegram delivery — isn't built yet. The 373 listings matching current
-criteria as of 2026-11-09 are already seeded into `state/business_seen.json`
-as a backfill (per instruction: already reviewed, shouldn't be re-analyzed
-once the analysis step exists) — only listings appearing after that point
-will show up as "new".
+(gitignored, ephemeral per-run), then `analyze_and_notify.py` picks those up:
+fetches full per-listing details, gets a rent-comp estimate
+(`rent_comps.py`, same anonymous-API pattern against the sibling rental
+site, adaptive city→region widening for thin markets), runs baseline DCF
+scenarios (`business_dcf.py` - conservative/balanced/full-leverage LTV,
+mostly IRR over a 50-year stream per the reference template's own summary
+dashboard, ported and corrected via careful cell-by-cell checks), asks an
+LLM (`llm_analysis.py`) to estimate the housing-company loan's remaining
+term from disclosed renovation text (re-running the DCF with that refined
+term) plus any disclosed-renovation effect on debt/rent/value (shown as
+separate labeled line items, deliberately not auto-merged into the DCF
+numbers), and sends one Telegram message per listing (`telegram_notify.py`).
+
+The 373 listings matching current criteria as of 2026-11-09 are already
+seeded into `state/business_seen.json` as a backfill (per instruction:
+already reviewed, shouldn't be re-analyzed) — only listings appearing after
+that point show up as "new" and get the full analysis treatment.
+
+**Secrets needed** (Settings → Secrets and variables → Actions):
+- `LISTING_SITE_BASE_URL` (shared with the hobby pipeline)
+- `RENTAL_SITE_BASE_URL` — the sibling rental site's base URL, same
+  de-branding reasoning as the listing one
+- `ANTHROPIC_API_KEY` — your own Anthropic Console API key (separate from
+  any Claude.ai/Claude Code subscription - see console.anthropic.com)
+- `TELEGRAM_BOT_TOKEN` — from @BotFather
+- `TELEGRAM_CHAT_ID` — your numeric Telegram user ID (e.g. via @userinfobot)
