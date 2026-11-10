@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Per-listing DCF + LLM analysis, delivered as a Telegram digest.
+
+Reads NEW_LISTINGS_PATH (written by fetch_business.py - raw search-result
+listings, missing the richer per-listing fields this needs), then for each:
+fetches full details, gets a rent comp estimate, runs baseline DCF scenarios
+(fallback housing-company loan term), asks the LLM to fill in the loan term
+(re-running DCF with that refined term - the one thing it's safe to silently
+recompute, a single clean variable substitution) and any renovation-driven
+estimates (presented as separate line items, not auto-merged into the DCF
+numbers - merging them correctly would mean handling compounding effects on
+the housing-debt/value/selling-price relationship, which risks introducing
+subtle errors into numbers that are meant to be trustworthy). Sends one
+Telegram message per listing.
+
+One listing failing (bad data, API hiccup, no rent comps) doesn't abort the
+whole batch - logged and skipped, matching the rest of this project's
+resilience pattern.
+"""
+import json
+import os
+from pathlib import Path
+
+import requests
+
+from business_dcf import ListingInputs, load_assumptions, run_scenarios
+from llm_analysis import analyze_listing
+from rent_comps import make_session as make_rental_session, estimate_rent
+from telegram_notify import send_message
+
+REPO_ROOT = Path(__file__).resolve().parent
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def make_sale_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({"Accept": "application/json", "User-Agent": USER_AGENT})
+    return session
+
+
+def fetch_announcement_details(session: requests.Session, friendly_id: str, base_url: str) -> dict:
+    resp = session.get(
+        f"{base_url}/api/v2/announcement/details",
+        params={"friendlyId": friendly_id},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def build_listing_inputs(details: dict, monthly_rent: float, loan_term: float | None = None) -> ListingInputs:
+    property_info = details.get("property") or {}
+    residence = details.get("residenceDetailsDTO") or {}
+    charges = property_info.get("periodicCharges") or []
+    maintenance = next(
+        (c["price"] for c in charges if c.get("periodicCharge") == "HOUSING_COMPANY_MAINTENANCE_CHARGE"),
+        0.0,
+    )
+    return ListingInputs(
+        selling_price=details.get("sellingPrice") or 0.0,
+        debt_free_price=details.get("debfFreePrice") or 0.0,
+        monthly_rent=monthly_rent,
+        monthly_maintenance_charge=maintenance,
+        city=(property_info.get("municipality") or {}).get("defaultName", ""),
+        room_count=residence.get("roomCount", ""),
+        housing_company_loan_term_years=loan_term,
+    )
+
+
+def format_pct(value) -> str:
+    return "n/a" if value is None else f"{value * 100:.1f}%"
+
+
+SCENARIO_ORDER = ("conservative", "balanced", "fullLeverage")
+
+
+def format_message(listing: dict, details: dict, rent_estimate, scenarios: dict, llm_result: dict) -> str:
+    property_info = details.get("property") or {}
+    address = property_info.get("streetAddressFreeForm") or listing.get("addressLine1", "")
+    friendly_id = listing.get("friendlyId")
+
+    lines = [
+        f"*{address}*",
+        listing.get("addressLine2", ""),
+        f"Selling price: {details.get('sellingPrice', 0):,.0f} € | "
+        f"Debt-free: {details.get('debfFreePrice', 0):,.0f} €",
+        "",
+        f"Rent estimate: {rent_estimate.median_rent:,.0f} €/mo "
+        f"(n={rent_estimate.sample_size}"
+        f"{', regional' if rent_estimate.widened_to_region else ''})",
+        "",
+        "*Scenarios (conservative / balanced / full leverage):*",
+    ]
+
+    rows = [
+        ("netYieldBeforeTax", "Net yield (pre-tax)", "pct"),
+        ("cashFlowAfterTaxYear1", "Cash flow Y1 (after tax)", "eur"),
+        ("cashFlowBreakEvenYear", "Break-even year", "int"),
+        ("totalReturnCashFlowAdjusted", "Total return (adj.)", "pct"),
+    ]
+    for key, label, kind in rows:
+        values = []
+        for scenario_name in SCENARIO_ORDER:
+            v = (scenarios.get(scenario_name) or {}).get(key)
+            if kind == "eur":
+                values.append(f"{v:,.0f}€" if v is not None else "n/a")
+            elif kind == "int":
+                values.append(str(v) if v is not None else "n/a")
+            else:
+                values.append(format_pct(v))
+        lines.append(f"{label}: {' / '.join(values)}")
+
+    lines += ["", f"*Analysis:* {llm_result.get('narrative', '')}"]
+
+    renovation_notes = []
+    if llm_result.get("additionalFutureDebtShare"):
+        renovation_notes.append(f"- Additional future debt share: {llm_result['additionalFutureDebtShare']:,.0f}€")
+    if llm_result.get("rentUpliftPct"):
+        renovation_notes.append(f"- Est. rent uplift: {format_pct(llm_result['rentUpliftPct'])}")
+    if llm_result.get("valueUpliftPct"):
+        renovation_notes.append(f"- Est. value uplift: {format_pct(llm_result['valueUpliftPct'])}")
+    if renovation_notes:
+        lines += ["", "*Disclosed renovation outlook (not folded into the scenario numbers above):*"] + renovation_notes
+
+    flags = llm_result.get("flags") or []
+    if flags:
+        lines += ["", "*Flags:*"] + [f"- {f}" for f in flags]
+
+    lines += ["", f"https://www.etuovi.com/kohde/{friendly_id}"]
+    return "\n".join(lines)
+
+
+def main():
+    new_listings_path = Path(os.environ.get("NEW_LISTINGS_PATH", REPO_ROOT / "new_business_listings.json"))
+    assumptions_path = Path(
+        os.environ.get("BUSINESS_ASSUMPTIONS_PATH", REPO_ROOT / "config" / "business_assumptions.json")
+    )
+    business_criteria_path = Path(
+        os.environ.get("BUSINESS_CRITERIA_PATH", REPO_ROOT / "config" / "business_criteria.json")
+    )
+    sale_base_url = os.environ["LISTING_SITE_BASE_URL"]
+    rental_base_url = os.environ["RENTAL_SITE_BASE_URL"]
+
+    with open(new_listings_path, "r", encoding="utf-8") as f:
+        new_listings = json.load(f)
+    if not new_listings:
+        print("No new listings to analyze.")
+        return
+
+    assumptions = load_assumptions(assumptions_path)
+    with open(business_criteria_path, "r", encoding="utf-8") as f:
+        criteria = json.load(f)
+    all_cities = criteria["profiles"][0]["cities"]
+
+    sale_session = make_sale_session()
+    rental_session = make_rental_session()
+
+    for listing in new_listings:
+        friendly_id = listing.get("friendlyId")
+        print(f"Analyzing {friendly_id}...")
+        try:
+            details = fetch_announcement_details(sale_session, friendly_id, sale_base_url)
+            residence = details.get("residenceDetailsDTO") or {}
+            property_info = details.get("property") or {}
+            city = (property_info.get("municipality") or {}).get("defaultName", "")
+            room_count = residence.get("roomCount", "")
+
+            rent_estimate = estimate_rent(rental_session, city, room_count, all_cities, rental_base_url)
+            if rent_estimate is None:
+                print(f"  No rent comps found for {city}/{room_count}, skipping.")
+                continue
+
+            baseline_inputs = build_listing_inputs(details, rent_estimate.median_rent)
+            baseline_scenarios = run_scenarios(baseline_inputs, assumptions)
+
+            llm_result = analyze_listing(details, rent_estimate, baseline_scenarios)
+
+            loan_term = llm_result.get("housingCompanyLoanTermYears")
+            if loan_term:
+                refined_inputs = build_listing_inputs(details, rent_estimate.median_rent, loan_term=loan_term)
+                scenarios = run_scenarios(refined_inputs, assumptions)
+            else:
+                scenarios = baseline_scenarios
+
+            message = format_message(listing, details, rent_estimate, scenarios, llm_result)
+            send_message(message)
+            print(f"  Sent Telegram message for {friendly_id}")
+        except Exception as e:
+            print(f"  Warning: failed to analyze/notify for {friendly_id}: {e}")
+            continue
+
+
+if __name__ == "__main__":
+    main()
