@@ -12,20 +12,28 @@ share - so this is a deliberate simplification to two loans:
     from its renovation history (not built yet - falls back to a config
     default), with the real Finnish tax treatment that its *principal*
     repayment (not just interest) is deductible against rental income.
-  - Bank loan: your own financing of the rest of the purchase price, at
-    static rate/term/LTV, linear amortization, principal NOT deductible
-    (only interest is - already netted into net yield before tax).
+  - Bank loan: tops up whatever the housing-company debt doesn't already
+    cover of the target LTV (applied to debt-free price, not selling price),
+    floored at 0. Carries a capitalized arrangement fee that's repaid with
+    the loan but accrues no interest of its own (tracked as a separate,
+    non-interest-bearing balance alongside the loan's principal). Principal
+    is NOT tax-deductible (only interest is, already netted into net yield
+    before tax); immediate reserves (a separate, smaller one-off cost) are
+    paid from equity instead, not financed.
 
 The headline metrics are pulled from the template's own summary dashboard
 (not a year-1 snapshot of the year-by-year grid, which is a different,
 easily-confused thing): six of the eight are IRR over the full 50-year cash
 flow stream, not simple ratios. Two different initial outlays are used -
-"total cost" (debt-free price + transfer tax + closing costs) for the
-unlevered metrics, "equity" (your actual cash in) for the levered ones -
-confirmed algebraically equivalent to the template's own Kokonaishinta/
-Sijoitettava pääoma cells. Only "Tuotto velattomaan" is a plain ratio, using
-raw monthly rent/maintenance inputs (not year-1 grown values) over total
-cost.
+"total cost" (debt-free price + transfer tax + arrangement fee + reserves)
+for the unlevered metrics, "equity" (debt-free price x (1 - LTV) + transfer
+tax + reserves - i.e. actual cash in, excluding the financed arrangement
+fee) for the levered ones - confirmed algebraically equivalent to the
+template's own Kokonaishinta/Sijoitettava pääoma cells. Only "Tuotto
+velattomaan" is a plain ratio, using raw monthly rent/maintenance inputs
+(not year-1 grown values) over total cost. Market value (used for
+appreciation and total-return metrics) grows from total cost, not bare
+debt-free price - also per the template.
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,22 +134,30 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> DCFResult:
         listing.housing_company_loan_term_years
         or a["housingCompanyLoanTermFallbackYears"]
     )
-    bank_loan0 = listing.selling_price * a["bankLoanToValue"]  # bankLoanToValueBase == "sellingPrice"
+    # LTV applies to the whole debt-free price; the bank loan tops up
+    # whatever the housing-company debt doesn't already cover of that target
+    bank_loan0 = max(0.0, listing.debt_free_price * a["bankLoanToValue"] - housing_company_debt0)
+    # capitalized into the bank loan (repaid with it, no interest charged on
+    # it) only when there's actually a bank loan - not paid from equity
+    arrangement_fee = a["bankLoanArrangementFee"] if bank_loan0 > 0 else 0.0
+    reserves = a["immediateReservesWithLoan"] if bank_loan0 > 0 else a["immediateReservesNoLoan"]
 
     housing_company_installment = (
         housing_company_debt0 / housing_company_term if housing_company_term > 0 else 0.0
     )
-    bank_installment = bank_loan0 / a["bankLoanTermYears"] if a["bankLoanTermYears"] > 0 else 0.0
+    bank_term = a["bankLoanTermYears"]
+    bank_principal_installment = bank_loan0 / bank_term if bank_term > 0 else 0.0
+    bank_fee_installment = arrangement_fee / bank_term if bank_term > 0 else 0.0
 
     transfer_tax = listing.debt_free_price * a["transferTaxRate"]
-    total_cost = listing.debt_free_price + transfer_tax + a["closingCostFixed"]
-    equity = listing.selling_price - bank_loan0 + transfer_tax + a["closingCostFixed"]
+    total_cost = listing.debt_free_price + transfer_tax + arrangement_fee + reserves
+    equity = listing.debt_free_price * (1 - a["bankLoanToValue"]) + transfer_tax + reserves
 
     rows: list[YearRow] = []
     rent = 0.0
     maintenance = 0.0
     repair_reserve = 0.0
-    debt_free_value = listing.debt_free_price
+    debt_free_value = total_cost  # template grows market value from Kokonaishinta, not debt-free price
     cum_notional_tax = 0.0
 
     for year in range(1, YEARS + 1):
@@ -160,10 +176,17 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> DCFResult:
         hc_interest = hc_balance_start * a["housingCompanyLoanRate"]
         hc_amortization = min(hc_balance_start, housing_company_installment)
 
-        bank_balance_start = max(0.0, bank_loan0 - (year - 1) * bank_installment)
-        bank_interest = bank_balance_start * a["bankLoanRate"]
-        bank_amortization = min(bank_balance_start, bank_installment)
-        bank_service_fee = a["bankLoanServiceFeeMonthly"] * 12 if bank_balance_start > 0 else 0.0
+        bank_principal_balance_start = max(0.0, bank_loan0 - (year - 1) * bank_principal_installment)
+        bank_fee_balance_start = max(0.0, arrangement_fee - (year - 1) * bank_fee_installment)
+        bank_interest = bank_principal_balance_start * a["bankLoanRate"]  # fee balance accrues no interest
+        bank_amortization = (
+            min(bank_principal_balance_start, bank_principal_installment)
+            + min(bank_fee_balance_start, bank_fee_installment)
+        )
+        bank_service_fee = (
+            a["bankLoanServiceFeeMonthly"] * 12
+            if (bank_principal_balance_start + bank_fee_balance_start) > 0 else 0.0
+        )
 
         net_yield_before_tax = noi - hc_interest - bank_interest - bank_service_fee
 
