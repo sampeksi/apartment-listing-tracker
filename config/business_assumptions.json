@@ -4,7 +4,6 @@
     "housingCompanyLoanAmortization": "linear",
     "bankLoanRate": 0.0534,
     "bankLoanTermYears": 15,
-    "bankLoanToValue": 0.70,
     "bankLoanAmortization": "linear",
     "bankLoanServiceFeeMonthly": 2.50,
     "housingCompanyLoanTermFallbackYears": 18,
@@ -19,6 +18,11 @@
     "collateralValueReturnShare": 1.00,
     "transferTaxRate": 0.015,
     "taxRate": 0.20
+  },
+  "ltvScenarios": {
+    "fullLeverage": 1.00,
+    "balanced": 0.85,
+    "conservative": 0.70
   },
   "regionOverrides": [
     {"city": "Tampere", "areaWeighting": "Multisilta", "roomCount": "ONE_ROOM", "rentGrowth": 0.022, "maintenanceChargeGrowth": 0.035, "marketPriceChange": 0.025, "occupancyRate": 0.965},

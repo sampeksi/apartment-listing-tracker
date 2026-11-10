@@ -126,7 +126,7 @@ class DCFResult:
     equity: float       # levered base ("Sijoitettava pääoma")
 
 
-def run_dcf(listing: ListingInputs, assumptions: dict) -> DCFResult:
+def run_dcf(listing: ListingInputs, assumptions: dict, ltv: float) -> DCFResult:
     a = resolve_assumptions(assumptions, listing.city, listing.room_count)
 
     housing_company_debt0 = max(0.0, listing.debt_free_price - listing.selling_price)
@@ -136,7 +136,7 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> DCFResult:
     )
     # LTV applies to the whole debt-free price; the bank loan tops up
     # whatever the housing-company debt doesn't already cover of that target
-    bank_loan0 = max(0.0, listing.debt_free_price * a["bankLoanToValue"] - housing_company_debt0)
+    bank_loan0 = max(0.0, listing.debt_free_price * ltv - housing_company_debt0)
     # capitalized into the bank loan (repaid with it, no interest charged on
     # it) only when there's actually a bank loan - not paid from equity
     arrangement_fee = a["bankLoanArrangementFee"] if bank_loan0 > 0 else 0.0
@@ -151,7 +151,7 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> DCFResult:
 
     transfer_tax = listing.debt_free_price * a["transferTaxRate"]
     total_cost = listing.debt_free_price + transfer_tax + arrangement_fee + reserves
-    equity = listing.debt_free_price * (1 - a["bankLoanToValue"]) + transfer_tax + reserves
+    equity = listing.debt_free_price * (1 - ltv) + transfer_tax + reserves
 
     rows: list[YearRow] = []
     rent = 0.0
@@ -259,4 +259,17 @@ def summarize(listing: ListingInputs, assumptions: dict, result: DCFResult) -> d
         "cashFlowAfterTaxYear1": rows[0].cash_flow_after_tax,
         "cashFlowBreakEvenYear": break_even_year,
         "totalReturnCashFlowAdjusted": irr_series(total_return_adj_series, result.equity),
+    }
+
+
+def run_scenarios(listing: ListingInputs, assumptions: dict) -> dict[str, dict]:
+    """Run every configured LTV scenario (e.g. fully leveraged vs. balanced
+    vs. conservative) so the equity-based metrics can be compared side by
+    side - the unlevered ones (unleveredYield/grossYield/totalYield) don't
+    vary by LTV and will come out ~identical across scenarios; that's
+    expected, not a bug."""
+    scenarios = assumptions.get("ltvScenarios", {"default": 0.70})
+    return {
+        name: summarize(listing, assumptions, run_dcf(listing, assumptions, ltv))
+        for name, ltv in scenarios.items()
     }
