@@ -16,19 +16,58 @@ share - so this is a deliberate simplification to two loans:
     static rate/term/LTV, linear amortization, principal NOT deductible
     (only interest is - already netted into net yield before tax).
 
-All currency-amount formulas and the tax-loss-carryforward mechanic are
-ported faithfully from the template; see the conversation history for the
-exact source formulas this was checked against. Two yield metrics are
-deliberately distinct, matching standard Finnish property-investment usage:
-"Tuotto velattomaan" divides by debt-free price (includes the housing
-company's own debt in the base), "Vuokratuotto" divides by selling price
-(what you actually pay, excluding that debt share).
+The headline metrics are pulled from the template's own summary dashboard
+(not a year-1 snapshot of the year-by-year grid, which is a different,
+easily-confused thing): six of the eight are IRR over the full 50-year cash
+flow stream, not simple ratios. Two different initial outlays are used -
+"total cost" (debt-free price + transfer tax + closing costs) for the
+unlevered metrics, "equity" (your actual cash in) for the levered ones -
+confirmed algebraically equivalent to the template's own Kokonaishinta/
+Sijoitettava pääoma cells. Only "Tuotto velattomaan" is a plain ratio, using
+raw monthly rent/maintenance inputs (not year-1 grown values) over total
+cost.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import json
 
 YEARS = 50
+
+
+def npv(rate: float, cash_flows: list[float]) -> float:
+    return sum(cf / (1 + rate) ** t for t, cf in enumerate(cash_flows))
+
+
+def irr(cash_flows: list[float], guess: float = 0.1, tol: float = 1e-7, max_iter: int = 100) -> float | None:
+    """Pure-Python IRR (Newton's method, falling back to bisection). Returns
+    None if no root is found (e.g. the series never turns cash-positive)."""
+    rate = guess
+    for _ in range(max_iter):
+        f = npv(rate, cash_flows)
+        d = sum(-t * cf / (1 + rate) ** (t + 1) for t, cf in enumerate(cash_flows) if t > 0)
+        if abs(d) < 1e-12:
+            break
+        new_rate = rate - f / d
+        if not (-0.999 < new_rate < 100):
+            break  # Newton diverged - fall through to bisection instead
+        if abs(new_rate - rate) < tol:
+            return new_rate
+        rate = new_rate
+
+    lo, hi = -0.99, 10.0
+    f_lo, f_hi = npv(lo, cash_flows), npv(hi, cash_flows)
+    if f_lo * f_hi > 0:
+        return None
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        f_mid = npv(mid, cash_flows)
+        if abs(f_mid) < tol:
+            return mid
+        if f_lo * f_mid < 0:
+            hi, f_hi = mid, f_mid
+        else:
+            lo, f_lo = mid, f_mid
+    return (lo + hi) / 2
 
 
 @dataclass
@@ -44,32 +83,13 @@ class ListingInputs:
 
 @dataclass
 class YearRow:
-    rent: float
-    maintenance_charge: float
-    repair_reserve: float
     noi: float
-    housing_company_interest: float
-    bank_interest: float
-    bank_service_fee: float
     net_yield_before_tax: float
-    housing_company_amortization: float
-    bank_amortization: float
-    total_amortization: float
-    tax: float
     net_yield_after_tax: float
     cash_flow_before_tax: float
     cash_flow_after_tax: float
-    cash_flow_after_tax_cum: float
     market_value_change: float
-    debt_free_value: float
-    total_return: float
     total_return_cash_flow_adjusted: float
-    invested_capital_cum: float  # cost-basis, for ROI
-    equity_mark_to_market: float  # for ROE
-    roi: float
-    roe: float
-    unlevered_yield: float
-    gross_yield: float
 
 
 def load_assumptions(path: Path) -> dict:
@@ -91,7 +111,14 @@ def resolve_assumptions(assumptions: dict, city: str, room_count: str) -> dict:
     return resolved
 
 
-def run_dcf(listing: ListingInputs, assumptions: dict) -> list[YearRow]:
+@dataclass
+class DCFResult:
+    rows: list[YearRow]
+    total_cost: float  # unlevered base ("Kokonaishinta")
+    equity: float       # levered base ("Sijoitettava pääoma")
+
+
+def run_dcf(listing: ListingInputs, assumptions: dict) -> DCFResult:
     a = resolve_assumptions(assumptions, listing.city, listing.room_count)
 
     housing_company_debt0 = max(0.0, listing.debt_free_price - listing.selling_price)
@@ -99,13 +126,16 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> list[YearRow]:
         listing.housing_company_loan_term_years
         or a["housingCompanyLoanTermFallbackYears"]
     )
-    bank_loan_base = listing.selling_price  # bankLoanToValueBase == "sellingPrice"
-    bank_loan0 = bank_loan_base * a["bankLoanToValue"]
+    bank_loan0 = listing.selling_price * a["bankLoanToValue"]  # bankLoanToValueBase == "sellingPrice"
 
     housing_company_installment = (
         housing_company_debt0 / housing_company_term if housing_company_term > 0 else 0.0
     )
     bank_installment = bank_loan0 / a["bankLoanTermYears"] if a["bankLoanTermYears"] > 0 else 0.0
+
+    transfer_tax = listing.debt_free_price * a["transferTaxRate"]
+    total_cost = listing.debt_free_price + transfer_tax + a["closingCostFixed"]
+    equity = listing.selling_price - bank_loan0 + transfer_tax + a["closingCostFixed"]
 
     rows: list[YearRow] = []
     rent = 0.0
@@ -113,9 +143,6 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> list[YearRow]:
     repair_reserve = 0.0
     debt_free_value = listing.debt_free_price
     cum_notional_tax = 0.0
-    cash_flow_after_tax_cum = 0.0
-    invested_capital = None  # set after year 1's equity requirement is known
-    equity0 = None
 
     for year in range(1, YEARS + 1):
         if year == 1:
@@ -149,7 +176,6 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> list[YearRow]:
         total_amortization = hc_amortization + bank_amortization
         cash_flow_before_tax = net_yield_before_tax - total_amortization
         cash_flow_after_tax = cash_flow_before_tax - tax
-        cash_flow_after_tax_cum += cash_flow_after_tax
 
         market_value_change = debt_free_value * a["marketPriceChange"]
         debt_free_value += market_value_change
@@ -160,62 +186,54 @@ def run_dcf(listing: ListingInputs, assumptions: dict) -> list[YearRow]:
         )
         total_return_cash_flow_adjusted = total_return + min(0.0, cash_flow_after_tax)
 
-        if year == 1:
-            equity0 = (
-                listing.selling_price - bank_loan0
-                + listing.debt_free_price * a["transferTaxRate"]
-                + a["closingCostFixed"]
-            )
-            invested_capital = equity0
-        else:
-            invested_capital += abs(min(0.0, rows[-1].cash_flow_after_tax))
-
-        remaining_debt = hc_balance_start - hc_amortization + bank_balance_start - bank_amortization
-        equity_mark_to_market = debt_free_value - remaining_debt
-
-        roi = total_return / invested_capital if invested_capital else 0.0
-        roe = total_return / equity_mark_to_market if equity_mark_to_market else 0.0
-        unlevered_yield = noi / debt_free_value
-        gross_yield = noi / listing.selling_price if listing.selling_price else 0.0
-
         rows.append(YearRow(
-            rent=rent, maintenance_charge=maintenance, repair_reserve=repair_reserve,
-            noi=noi, housing_company_interest=hc_interest, bank_interest=bank_interest,
-            bank_service_fee=bank_service_fee, net_yield_before_tax=net_yield_before_tax,
-            housing_company_amortization=hc_amortization, bank_amortization=bank_amortization,
-            total_amortization=total_amortization, tax=tax,
+            noi=noi,
+            net_yield_before_tax=net_yield_before_tax,
             net_yield_after_tax=net_yield_after_tax,
-            cash_flow_before_tax=cash_flow_before_tax, cash_flow_after_tax=cash_flow_after_tax,
-            cash_flow_after_tax_cum=cash_flow_after_tax_cum,
-            market_value_change=market_value_change, debt_free_value=debt_free_value,
-            total_return=total_return,
+            cash_flow_before_tax=cash_flow_before_tax,
+            cash_flow_after_tax=cash_flow_after_tax,
+            market_value_change=market_value_change,
             total_return_cash_flow_adjusted=total_return_cash_flow_adjusted,
-            invested_capital_cum=invested_capital, equity_mark_to_market=equity_mark_to_market,
-            roi=roi, roe=roe, unlevered_yield=unlevered_yield, gross_yield=gross_yield,
         ))
 
-    return rows
+    return DCFResult(rows=rows, total_cost=total_cost, equity=equity)
 
 
-def summarize(listing: ListingInputs, rows: list[YearRow]) -> dict:
-    """The 8 headline metrics, mostly as year-1 snapshots (what an investor
-    sees "if I bought today"), plus the one genuinely new derived metric."""
-    y1 = rows[0]
+def summarize(listing: ListingInputs, assumptions: dict, result: DCFResult) -> dict:
+    """The dashboard's headline metrics. Six of eight are IRR over the full
+    50-year stream (unlevered ones against -total_cost, levered ones against
+    -equity); only "unleveredYield" is a plain ratio."""
+    a = resolve_assumptions(assumptions, listing.city, listing.room_count)
+    rows = result.rows
+
+    def irr_series(values: list[float], base: float) -> float | None:
+        return irr([-base] + values)
+
+    noi_series = [r.noi for r in rows]
+    noi_plus_appreciation = [r.noi + r.market_value_change for r in rows]
+    net_yield_before_tax_series = [r.net_yield_before_tax for r in rows]
+    net_yield_after_tax_series = [r.net_yield_after_tax for r in rows]
+    cash_flow_before_tax_series = [r.cash_flow_before_tax for r in rows]
+    cash_flow_after_tax_series = [r.cash_flow_after_tax for r in rows]
+    total_return_adj_series = [r.total_return_cash_flow_adjusted for r in rows]
+
     break_even_year = next(
         (i + 1 for i, r in enumerate(rows) if r.cash_flow_after_tax >= 0), None
     )
-    appreciation_yield = (
-        y1.market_value_change / listing.selling_price if listing.selling_price else 0.0
-    )
+
     return {
-        "unleveredYield": y1.unlevered_yield,
-        "grossYield": y1.gross_yield,
-        "roe": y1.roe,
-        "totalYield": y1.gross_yield + appreciation_yield,
-        "netYieldBeforeTax": y1.net_yield_before_tax,
-        "netYieldAfterTax": y1.net_yield_after_tax,
-        "cashFlowBeforeTax": y1.cash_flow_before_tax,
-        "cashFlowAfterTaxYear1": y1.cash_flow_after_tax,
+        # the one plain ratio - raw monthly inputs over total cost, not NOI
+        "unleveredYield": (
+            (listing.monthly_rent - listing.monthly_maintenance_charge) * 12 / result.total_cost
+            if result.total_cost else 0.0
+        ),
+        "grossYield": irr_series(noi_series, result.total_cost),
+        "totalYield": irr_series(noi_plus_appreciation, result.total_cost),
+        "netYieldBeforeTax": irr_series(net_yield_before_tax_series, result.equity),
+        "netYieldAfterTax": irr_series(net_yield_after_tax_series, result.equity),
+        "cashFlowBeforeTax": irr_series(cash_flow_before_tax_series, result.equity),
+        "cashFlowAfterTax": irr_series(cash_flow_after_tax_series, result.equity),
+        "cashFlowAfterTaxYear1": rows[0].cash_flow_after_tax,
         "cashFlowBreakEvenYear": break_even_year,
-        "totalReturnCashFlowAdjusted": y1.total_return_cash_flow_adjusted,
+        "totalReturnCashFlowAdjusted": irr_series(total_return_adj_series, result.equity),
     }
