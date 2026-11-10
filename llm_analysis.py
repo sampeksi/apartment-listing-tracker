@@ -107,10 +107,16 @@ def build_user_message(listing_details: dict, rent_estimate, scenarios: dict) ->
     residence = listing_details.get("residenceDetailsDTO") or {}
     inspection = residence.get("inspection") or {}
 
+    # open-bidding ("tarjouskauppa") listings have no fixed sellingPrice/
+    # debfFreePrice - only a starting bid, under different field names
+    selling_price = listing_details.get("sellingPrice") or listing_details.get("openBiddingStartingSellingPrice")
+    debt_free_price = listing_details.get("debfFreePrice") or listing_details.get("openBiddingStartingDebtFreePrice")
+    bidding_note = " (open bidding - this is the starting price, not a fixed asking price)" if listing_details.get("openBiddingInUse") else ""
+
     parts = [
         f"Address: {property_info.get('streetAddressFreeForm', 'unknown')}",
-        f"Selling price: {listing_details.get('sellingPrice')} EUR",
-        f"Debt-free price: {listing_details.get('debfFreePrice')} EUR",
+        f"Selling price: {selling_price} EUR{bidding_note}",
+        f"Debt-free price: {debt_free_price} EUR{bidding_note}",
         f"Construction year: {residence.get('constructionFinishedYear')}",
         f"Room structure: {residence.get('roomStructure')}",
         f"Overall condition: {inspection.get('overallCondition')}",

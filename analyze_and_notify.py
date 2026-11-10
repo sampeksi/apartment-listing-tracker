@@ -51,6 +51,16 @@ def fetch_announcement_details(session: requests.Session, friendly_id: str, base
     return resp.json()
 
 
+def get_selling_price(details: dict) -> float:
+    # open-bidding ("tarjouskauppa") listings have no fixed sellingPrice -
+    # only a starting bid, under a completely different field name
+    return details.get("sellingPrice") or details.get("openBiddingStartingSellingPrice") or 0.0
+
+
+def get_debt_free_price(details: dict) -> float:
+    return details.get("debfFreePrice") or details.get("openBiddingStartingDebtFreePrice") or 0.0
+
+
 def build_listing_inputs(details: dict, monthly_rent: float, loan_term: float | None = None) -> ListingInputs:
     property_info = details.get("property") or {}
     residence = details.get("residenceDetailsDTO") or {}
@@ -60,8 +70,8 @@ def build_listing_inputs(details: dict, monthly_rent: float, loan_term: float | 
         0.0,
     )
     return ListingInputs(
-        selling_price=details.get("sellingPrice") or 0.0,
-        debt_free_price=details.get("debfFreePrice") or 0.0,
+        selling_price=get_selling_price(details),
+        debt_free_price=get_debt_free_price(details),
         monthly_rent=monthly_rent,
         monthly_maintenance_charge=maintenance,
         city=(property_info.get("municipality") or {}).get("defaultName", ""),
@@ -85,8 +95,9 @@ def format_message(listing: dict, details: dict, rent_estimate, scenarios: dict,
     lines = [
         f"*{address}*",
         listing.get("addressLine2", ""),
-        f"Selling price: {details.get('sellingPrice', 0):,.0f} € | "
-        f"Debt-free: {details.get('debfFreePrice', 0):,.0f} €",
+        f"Selling price: {get_selling_price(details):,.0f} €"
+        f"{' (open bidding, starting price)' if details.get('openBiddingInUse') else ''} | "
+        f"Debt-free: {get_debt_free_price(details):,.0f} €",
         "",
         f"Rent estimate: {rent_estimate.median_rent:,.0f} €/mo "
         f"(n={rent_estimate.sample_size}"
