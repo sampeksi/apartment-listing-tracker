@@ -23,7 +23,7 @@ from pathlib import Path
 
 import requests
 
-from building_history import fetch_building_rental_history
+from building_history import fetch_building_rental_history, resolve_business_id
 from business_dcf import ListingInputs, load_assumptions, run_scenarios
 from llm_analysis import analyze_listing
 from rent_comps import make_session as make_rental_session, estimate_rent
@@ -189,7 +189,19 @@ def main():
                 print(f"  No rent comps found for {city}/{room_count}, skipping.")
                 continue
 
-            business_id = (property_info.get("housingCompany") or {}).get("businessId")
+            housing_company = property_info.get("housingCompany") or {}
+            business_id = housing_company.get("businessId")
+            if not business_id:
+                postal_code = (property_info.get("postCode") or {}).get("postCode")
+                try:
+                    business_id = resolve_business_id(sale_session, housing_company.get("name"), postal_code)
+                except Exception as e:
+                    print(f"  Warning: businessId lookup via PRH failed: {e}")
+                if business_id:
+                    print(f"  Resolved businessId via PRH company search: {business_id}")
+                else:
+                    print("  No businessId in listing data and none resolved via PRH, skipping building rental history.")
+
             building_rental_history = ([], [])
             if business_id:
                 try:

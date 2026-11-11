@@ -1,8 +1,10 @@
 name: Fetch business listings
 
 on:
-  schedule:
-    - cron: "37 6 * * *"
+  # schedule disabled while the businessId/PRH resolution change is still
+  # being tested - re-enable once confirmed stable
+  # schedule:
+  #   - cron: "37 6 * * *"
   workflow_dispatch: {}
 
 permissions:
