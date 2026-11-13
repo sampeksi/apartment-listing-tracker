@@ -15,6 +15,7 @@ Needs ANTHROPIC_API_KEY set (your own API account - see README; this is a
 separate thing from a Claude.ai subscription).
 """
 import json
+from datetime import datetime, timezone
 
 import anthropic
 
@@ -156,13 +157,20 @@ Be conservative: a wrong estimate here feeds directly into real investment decis
 
 
 def format_rental_history(active: list, past: list) -> str:
+    """Active records have no date field at all (still live, "now" is
+    implicit); past ones carry unpublishingTime (ms epoch) - previously
+    dropped entirely, which left the LLM unable to tell a 2026 rent from a
+    2017 one and treating the whole history as undated/unreliable."""
     if not active and not past:
         return "none available for this building"
     lines = []
     for r in active:
-        lines.append(f"- ACTIVE: {r.get('area')}m², {r.get('searchPrice')} EUR/mo, {r.get('roomStructure')}")
-    for r in past[:15]:  # most recent first, already sorted by the source data
-        lines.append(f"- past: {r.get('area')}m², {r.get('searchPrice')} EUR/mo, {r.get('roomStructure')}")
+        lines.append(f"- ACTIVE (currently listed): {r.get('area')}m², {r.get('searchPrice')} EUR/mo, {r.get('roomStructure')}")
+    sorted_past = sorted(past, key=lambda r: r.get("unpublishingTime") or 0, reverse=True)
+    for r in sorted_past[:15]:
+        ts = r.get("unpublishingTime")
+        when = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m") if ts else "date unknown"
+        lines.append(f"- past (delisted {when}): {r.get('area')}m², {r.get('searchPrice')} EUR/mo, {r.get('roomStructure')}")
     return "\n".join(lines)
 
 

@@ -127,7 +127,9 @@ def format_message(listing: dict, details: dict, rent_estimate, scenarios: dict,
 
     refined_rent = llm_result.get("estimatedMonthlyRent")
     rent_source = llm_result.get("rentSourceUsed")
-    if refined_rent and abs(refined_rent - rent_estimate.median_rent) >= 1:
+    deviates = refined_rent and abs(refined_rent - rent_estimate.median_rent) >= 1
+    non_default_source = rent_source and rent_source != "generic_area_comp"
+    if refined_rent and (deviates or non_default_source):
         source_label = RENT_SOURCE_LABELS.get(rent_source, "refined")
         lines.append(f"Rent used in scenarios: {refined_rent:,.0f} €/mo ({source_label})")
     rent_reasoning = llm_result.get("rentReasoning")
