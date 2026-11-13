@@ -36,6 +36,40 @@ ANALYSIS_SCHEMA = {
                 "difference - don't invent a deviation without a basis."
             ),
         },
+        "rentSourceUsed": {
+            "type": "string",
+            "enum": [
+                "building_history", "condition_matched_comp",
+                "adjacent_room_count_condition_adjustment", "disclosed_contract_rent",
+                "generic_area_comp",
+            ],
+            "description": (
+                "Which single source primarily drove estimatedMonthlyRent. "
+                "building_history = this building's own rental history. "
+                "condition_matched_comp = the area comp bucket matching this "
+                "apartment's own disclosed condition, for its own room count. "
+                "adjacent_room_count_condition_adjustment = derived a relative "
+                "condition adjustment from a different room count's condition "
+                "breakdown and applied it to another baseline. "
+                "disclosed_contract_rent = an explicit rent figure stated in "
+                "the listing text itself (e.g. sold with a sitting tenant). "
+                "generic_area_comp = the blended, condition-agnostic comp, "
+                "used because nothing more specific gave a clear basis. If "
+                "more than one source agreed and reinforced each other, name "
+                "the most specific one you actually relied on, and explain "
+                "the rest in rentReasoning."
+            ),
+        },
+        "rentReasoning": {
+            "type": "string",
+            "description": (
+                "1-2 sentences: specifically what data point(s) drove "
+                "estimatedMonthlyRent, and whether/why it deviates from the "
+                "generic area-wide comp. This is for diagnosing which inputs "
+                "are actually useful, not for the investor-facing narrative - "
+                "be concrete (cite numbers/sources), not vague."
+            ),
+        },
         "housingCompanyLoanTermYears": {
             "type": ["integer", "null"],
             "description": (
@@ -98,7 +132,7 @@ ANALYSIS_SCHEMA = {
         },
     },
     "required": [
-        "estimatedMonthlyRent", "housingCompanyLoanTermYears",
+        "estimatedMonthlyRent", "rentSourceUsed", "rentReasoning", "housingCompanyLoanTermYears",
         "additionalFutureDebtShare", "rentUpliftPct", "valueUpliftPct",
         "estimateConfidence", "narrative", "flags",
     ],
@@ -108,11 +142,13 @@ ANALYSIS_SCHEMA = {
 SYSTEM_PROMPT = """You are a real estate investment analyst reviewing Finnish buy-to-let apartment listings for a property investment company. You're given a specific listing's details (including Finnish-language disclosure text about the housing company's condition and renovation history/plans), comparable rent data (both a generic area-wide comp and, when available, this exact building's own rental history), and pre-computed DCF investment scenarios (unlevered and leveraged yield/return metrics across multiple financing scenarios). Those numbers are already correct, computed deterministically - your job is not to recompute or second-guess the arithmetic, only to interpret it and fill in the inputs that required judgment.
 
 Three things you need to estimate, since they're not in any structured field:
-1. Achievable monthly rent - priority order, most to least trustworthy:
-   a. This exact building's own rental history, when present - especially the same-size unit being repeatedly re-rented. This is the main source of truth: it reflects this specific building, not a market average.
-   b. The condition-matched rent comp for this apartment's own room count - the generic area comp blends GOOD/SATISFACTORY/TOLERABLE condition units together, which can be a bad match for a specific apartment's actual condition (given above as "Overall condition"). Use the bucket matching that condition when it has a real sample size.
-   c. If that condition/room-count bucket is too thin, you may be given the same condition breakdown for an adjacent room count instead - use that only to derive a relative adjustment (e.g. "GOOD-condition units rent for about 12% more than TOLERABLE ones here"), and apply that ratio to whatever baseline you'd otherwise use (building history or the generic comp) - never report that other room count's absolute rent figure as this apartment's own.
-   d. The generic area-wide comp (all conditions blended) - a city or district-wide comp can be skewed by a large, varied market (e.g. a big city's average mixes cheap suburbs with its expensive center). Use this only when none of the above give a clear basis.
+1. Achievable monthly rent, plus rentSourceUsed and rentReasoning explaining the pick - priority order, most to least trustworthy:
+   a. An explicit rent figure disclosed in the listing text itself (e.g. sold with a sitting tenant at a stated contract rent) - this is a known fact about this exact unit, not an estimate, so it outranks every comp below. rentSourceUsed = disclosed_contract_rent.
+   b. This exact building's own rental history, when present - especially the same-size unit being repeatedly re-rented. rentSourceUsed = building_history.
+   c. The condition-matched rent comp for this apartment's own room count - the generic area comp blends GOOD/SATISFACTORY/TOLERABLE condition units together, which can be a bad match for a specific apartment's actual condition (given above as "Overall condition"). Use the bucket matching that condition when it has a real sample size. rentSourceUsed = condition_matched_comp.
+   d. If that condition/room-count bucket is too thin, you may be given the same condition breakdown for an adjacent room count instead - use that only to derive a relative adjustment (e.g. "GOOD-condition units rent for about 12% more than TOLERABLE ones here"), and apply that ratio to whatever baseline you'd otherwise use (building history or the generic comp) - never report that other room count's absolute rent figure as this apartment's own. rentSourceUsed = adjacent_room_count_condition_adjustment.
+   e. The generic area-wide comp (all conditions blended) - a city or district-wide comp can be skewed by a large, varied market (e.g. a big city's average mixes cheap suburbs with its expensive center). Use this only when none of the above give a clear basis. rentSourceUsed = generic_area_comp.
+   In rentReasoning, be concrete and cite the actual numbers/sources you weighed, including anything that almost changed your mind - this is read for diagnosing which inputs are actually useful, not for the investor-facing narrative.
 2. The housing company's own loan's remaining amortization term - Finnish disclosure text sometimes states this directly (an explicit completion date for an ongoing renovation loan, or an explicit repayment plan); otherwise return null and a fallback will be used.
 3. Any UPCOMING (not yet reflected in the current price) disclosed renovation's likely effect on this apartment's future debt share, achievable rent, and market value - only when the text gives a real basis (e.g. an explicit per-apartment debt-share euro figure, or a dated, scoped renovation plan). If the text is vague or there's no upcoming renovation mentioned, return zeros rather than guessing.
 

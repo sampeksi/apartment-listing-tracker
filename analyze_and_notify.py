@@ -99,6 +99,14 @@ def format_pct(value) -> str:
 
 SCENARIO_ORDER = ("conservative", "balanced", "fullLeverage")
 
+RENT_SOURCE_LABELS = {
+    "disclosed_contract_rent": "disclosed contract rent",
+    "building_history": "building's own rental history",
+    "condition_matched_comp": "condition-matched area comp",
+    "adjacent_room_count_condition_adjustment": "condition adjustment via adjacent room count",
+    "generic_area_comp": "generic area comp",
+}
+
 
 def format_message(listing: dict, details: dict, rent_estimate, scenarios: dict, llm_result: dict) -> str:
     property_info = details.get("property") or {}
@@ -118,8 +126,13 @@ def format_message(listing: dict, details: dict, rent_estimate, scenarios: dict,
     ]
 
     refined_rent = llm_result.get("estimatedMonthlyRent")
+    rent_source = llm_result.get("rentSourceUsed")
     if refined_rent and abs(refined_rent - rent_estimate.median_rent) >= 1:
-        lines.append(f"Rent used in scenarios: {refined_rent:,.0f} €/mo (refined - see analysis)")
+        source_label = RENT_SOURCE_LABELS.get(rent_source, "refined")
+        lines.append(f"Rent used in scenarios: {refined_rent:,.0f} €/mo ({source_label})")
+    rent_reasoning = llm_result.get("rentReasoning")
+    if rent_reasoning:
+        lines.append(f"Rent reasoning: {rent_reasoning}")
 
     lines += ["", "*Scenarios (conservative / balanced / full leverage):*"]
 
