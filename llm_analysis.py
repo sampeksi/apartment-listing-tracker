@@ -108,7 +108,11 @@ ANALYSIS_SCHEMA = {
 SYSTEM_PROMPT = """You are a real estate investment analyst reviewing Finnish buy-to-let apartment listings for a property investment company. You're given a specific listing's details (including Finnish-language disclosure text about the housing company's condition and renovation history/plans), comparable rent data (both a generic area-wide comp and, when available, this exact building's own rental history), and pre-computed DCF investment scenarios (unlevered and leveraged yield/return metrics across multiple financing scenarios). Those numbers are already correct, computed deterministically - your job is not to recompute or second-guess the arithmetic, only to interpret it and fill in the inputs that required judgment.
 
 Three things you need to estimate, since they're not in any structured field:
-1. Achievable monthly rent - weigh the building's own rental history (when present) against the generic area-wide comp; a generic city or district-wide comp can be skewed by a large, varied market (e.g. a big city's average mixes cheap suburbs with its expensive center), while a building's own history - especially the same-size unit being repeatedly re-rented - is a much more precise, directly comparable figure. Default to the generic comp when building-specific history is sparse or absent.
+1. Achievable monthly rent - priority order, most to least trustworthy:
+   a. This exact building's own rental history, when present - especially the same-size unit being repeatedly re-rented. This is the main source of truth: it reflects this specific building, not a market average.
+   b. The condition-matched rent comp for this apartment's own room count - the generic area comp blends GOOD/SATISFACTORY/TOLERABLE condition units together, which can be a bad match for a specific apartment's actual condition (given above as "Overall condition"). Use the bucket matching that condition when it has a real sample size.
+   c. If that condition/room-count bucket is too thin, you may be given the same condition breakdown for an adjacent room count instead - use that only to derive a relative adjustment (e.g. "GOOD-condition units rent for about 12% more than TOLERABLE ones here"), and apply that ratio to whatever baseline you'd otherwise use (building history or the generic comp) - never report that other room count's absolute rent figure as this apartment's own.
+   d. The generic area-wide comp (all conditions blended) - a city or district-wide comp can be skewed by a large, varied market (e.g. a big city's average mixes cheap suburbs with its expensive center). Use this only when none of the above give a clear basis.
 2. The housing company's own loan's remaining amortization term - Finnish disclosure text sometimes states this directly (an explicit completion date for an ongoing renovation loan, or an explicit repayment plan); otherwise return null and a fallback will be used.
 3. Any UPCOMING (not yet reflected in the current price) disclosed renovation's likely effect on this apartment's future debt share, achievable rent, and market value - only when the text gives a real basis (e.g. an explicit per-apartment debt-share euro figure, or a dated, scoped renovation plan). If the text is vague or there's no upcoming renovation mentioned, return zeros rather than guessing.
 
@@ -126,9 +130,42 @@ def format_rental_history(active: list, past: list) -> str:
     return "\n".join(lines)
 
 
+def _format_condition_estimates(estimates: dict) -> str:
+    lines = []
+    for condition, est in estimates.items():
+        if est is None:
+            lines.append(f"- {condition}: no comps found")
+        else:
+            lines.append(
+                f"- {condition}: {est.median_rent:.0f} EUR/month "
+                f"(median {est.median_rent_per_sqm:.2f} EUR/sqm, n={est.sample_size}"
+                f"{', widened to regional cluster' if est.widened_to_region else ''})"
+            )
+    return "\n".join(lines)
+
+
+def format_condition_breakdown(breakdown: dict | None) -> str:
+    if not breakdown:
+        return "not available"
+    parts = [
+        f"Rent by condition, this apartment's own room count ({breakdown['roomCount']}):",
+        _format_condition_estimates(breakdown["estimates"]),
+    ]
+    if breakdown.get("fallbackRoomCount"):
+        parts += [
+            "",
+            f"That room count's condition buckets were too thin, so here's the same breakdown "
+            f"for an adjacent room count ({breakdown['fallbackRoomCount']}) instead - use this only to "
+            f"derive a relative condition adjustment, never as a direct rent figure for this apartment:",
+            _format_condition_estimates(breakdown["fallbackEstimates"]),
+        ]
+    return "\n".join(parts)
+
+
 def build_user_message(
     listing_details: dict, rent_estimate, scenarios: dict,
     building_rental_history: tuple[list, list] = ([], []),
+    condition_rent_breakdown: dict | None = None,
 ) -> str:
     property_info = listing_details.get("property") or {}
     housing_company = property_info.get("housingCompany") or {}
@@ -166,6 +203,8 @@ def build_user_message(
         "This specific building's own rental history (more precise when present):",
         format_rental_history(*building_rental_history),
         "",
+        format_condition_breakdown(condition_rent_breakdown),
+        "",
         "Baseline DCF scenarios (using the generic comp above, fallback housing-company loan term, no renovation adjustment):",
         json.dumps(scenarios, indent=2),
     ]
@@ -175,9 +214,12 @@ def build_user_message(
 def analyze_listing(
     listing_details: dict, rent_estimate, scenarios: dict,
     building_rental_history: tuple[list, list] = ([], []),
+    condition_rent_breakdown: dict | None = None,
 ) -> dict:
     client = anthropic.Anthropic()
-    user_message = build_user_message(listing_details, rent_estimate, scenarios, building_rental_history)
+    user_message = build_user_message(
+        listing_details, rent_estimate, scenarios, building_rental_history, condition_rent_breakdown
+    )
 
     response = client.messages.create(
         model=MODEL,

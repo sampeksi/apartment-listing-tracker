@@ -38,7 +38,7 @@ from building_history import fetch_building_rental_history, resolve_business_id
 from business_dcf import ListingInputs, load_assumptions, run_scenarios
 from fetch_business import fetch_all_listings
 from llm_analysis import analyze_listing
-from rent_comps import make_session as make_rental_session, estimate_rent
+from rent_comps import make_session as make_rental_session, estimate_rent, estimate_rent_by_condition
 from telegram_notify import send_message
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -119,7 +119,7 @@ def format_message(listing: dict, details: dict, rent_estimate, scenarios: dict,
 
     refined_rent = llm_result.get("estimatedMonthlyRent")
     if refined_rent and abs(refined_rent - rent_estimate.median_rent) >= 1:
-        lines.append(f"Rent used in scenarios: {refined_rent:,.0f} €/mo (refined from building history)")
+        lines.append(f"Rent used in scenarios: {refined_rent:,.0f} €/mo (refined - see analysis)")
 
     lines += ["", "*Scenarios (conservative / balanced / full leverage):*"]
 
@@ -216,6 +216,15 @@ def main():
                 print(f"  No rent comps found for {city}/{room_count}, skipping.")
                 continue
 
+            subject_condition = (residence.get("inspection") or {}).get("overallCondition")
+            try:
+                condition_rent_breakdown = estimate_rent_by_condition(
+                    rental_session, city, room_count, all_cities, rental_base_url, subject_condition
+                )
+            except Exception as e:
+                print(f"  Warning: condition-stratified rent comp failed: {e}")
+                condition_rent_breakdown = None
+
             housing_company = property_info.get("housingCompany") or {}
             business_id = housing_company.get("businessId")
             if not business_id:
@@ -239,7 +248,9 @@ def main():
             baseline_inputs = build_listing_inputs(details, rent_estimate.median_rent)
             baseline_scenarios = run_scenarios(baseline_inputs, assumptions)
 
-            llm_result = analyze_listing(details, rent_estimate, baseline_scenarios, building_rental_history)
+            llm_result = analyze_listing(
+                details, rent_estimate, baseline_scenarios, building_rental_history, condition_rent_breakdown
+            )
 
             # safe single-variable substitutions, same reasoning for both:
             # no compounding cross-variable interaction with the rest of the
