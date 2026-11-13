@@ -16,15 +16,27 @@ Telegram message per listing.
 One listing failing (bad data, API hiccup, no rent comps) doesn't abort the
 whole batch - logged and skipped, matching the rest of this project's
 resilience pattern.
+
+Test mode, for iterating on rent-estimate quality without touching real
+state or sending real Telegram messages:
+- DRY_RUN=true - print each formatted message instead of sending it.
+- TEST_FRIENDLY_IDS=id1,id2 - analyze exactly these listings instead of
+  reading NEW_LISTINGS_PATH.
+- RANDOM_SAMPLE_COUNT=N - analyze N random listings currently matching
+  config/business_criteria.json (ignored if TEST_FRIENDLY_IDS is set).
+Neither test input touches state/business_seen.json - only fetch_business.py
+does that.
 """
 import json
 import os
+import random
 from pathlib import Path
 
 import requests
 
 from building_history import fetch_building_rental_history, resolve_business_id
 from business_dcf import ListingInputs, load_assumptions, run_scenarios
+from fetch_business import fetch_all_listings
 from llm_analysis import analyze_listing
 from rent_comps import make_session as make_rental_session, estimate_rent
 from telegram_notify import send_message
@@ -160,11 +172,9 @@ def main():
     sale_base_url = os.environ["LISTING_SITE_BASE_URL"]
     rental_base_url = os.environ["RENTAL_SITE_BASE_URL"]
 
-    with open(new_listings_path, "r", encoding="utf-8") as f:
-        new_listings = json.load(f)
-    if not new_listings:
-        print("No new listings to analyze.")
-        return
+    dry_run = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
+    test_friendly_ids = os.environ.get("TEST_FRIENDLY_IDS", "").strip()
+    random_sample_count = os.environ.get("RANDOM_SAMPLE_COUNT", "").strip()
 
     assumptions = load_assumptions(assumptions_path)
     with open(business_criteria_path, "r", encoding="utf-8") as f:
@@ -173,6 +183,23 @@ def main():
 
     sale_session = make_sale_session()
     rental_session = make_rental_session()
+
+    if test_friendly_ids:
+        new_listings = [{"friendlyId": fid.strip()} for fid in test_friendly_ids.split(",") if fid.strip()]
+    elif random_sample_count:
+        matching = []
+        for profile in criteria["profiles"]:
+            matching.extend(fetch_all_listings(sale_session, profile, sale_base_url))
+        sample_size = min(int(random_sample_count), len(matching))
+        new_listings = random.sample(matching, sample_size)
+        print(f"Randomly sampled {sample_size} of {len(matching)} listings matching current criteria.")
+    else:
+        with open(new_listings_path, "r", encoding="utf-8") as f:
+            new_listings = json.load(f)
+
+    if not new_listings:
+        print("No new listings to analyze.")
+        return
 
     for listing in new_listings:
         friendly_id = listing.get("friendlyId")
@@ -223,8 +250,11 @@ def main():
             scenarios = run_scenarios(refined_inputs, assumptions)
 
             message = format_message(listing, details, rent_estimate, scenarios, llm_result)
-            send_message(message)
-            print(f"  Sent Telegram message for {friendly_id}")
+            if dry_run:
+                print(f"  --- DRY RUN: message for {friendly_id} ---\n{message}\n  --- end message ---")
+            else:
+                send_message(message)
+                print(f"  Sent Telegram message for {friendly_id}")
         except Exception as e:
             print(f"  Warning: failed to analyze/notify for {friendly_id}: {e}")
             continue

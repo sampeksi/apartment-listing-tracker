@@ -1,0 +1,40 @@
+name: Test business listing analysis (dry run)
+
+on:
+  workflow_dispatch:
+    inputs:
+      friendly_ids:
+        description: "Comma-separated friendlyIds to analyze (leave blank to random-sample instead)"
+        required: false
+        type: string
+      random_count:
+        description: "If friendly_ids is blank, analyze this many random listings matching current criteria"
+        required: false
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  test-analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dry-run analysis (no Telegram, no state changes)
+        env:
+          LISTING_SITE_BASE_URL: ${{ secrets.LISTING_SITE_BASE_URL }}
+          RENTAL_SITE_BASE_URL: ${{ secrets.RENTAL_SITE_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DRY_RUN: "true"
+          TEST_FRIENDLY_IDS: ${{ inputs.friendly_ids }}
+          RANDOM_SAMPLE_COUNT: ${{ inputs.random_count }}
+        run: python analyze_and_notify.py
